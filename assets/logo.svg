@@ -1,0 +1,23 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background -->
+  <rect width="1024" height="1024" rx="200" fill="#111111"/>
+  
+  <!-- Stylized Hexagon/Nut Shape -->
+  <path d="M512 150L823.769 330V690L512 870L200.231 690V330L512 150Z" stroke="#FF6B00" stroke-width="40" stroke-linejoin="round"/>
+  
+  <!-- Gas Pump / Nozzle Icon -->
+  <g transform="translate(362, 320) scale(1.2)">
+    <!-- Handle -->
+    <path d="M50 200V50C50 22.3858 72.3858 0 100 0H200" stroke="#FF6B00" stroke-width="40" stroke-linecap="round"/>
+    <rect x="180" y="-20" width="60" height="80" rx="10" fill="#FF6B00"/>
+    
+    <!-- Hose forming a 'C' -->
+    <path d="M50 200C50 255.228 94.7715 300 150 300H200" stroke="#FF6B00" stroke-width="40" stroke-linecap="round"/>
+  </g>
+  
+  <!-- Typography "CNG" -->
+  <text x="512" y="680" text-anchor="middle" fill="#FFFFFF" style="font-family: Arial, sans-serif; font-weight: 900; font-size: 160px; letter-spacing: 10px;">CNG</text>
+  
+  <!-- Decorative "Eco" Spark -->
+  <path d="M680 380L700 340L720 380L760 400L720 420L700 460L680 420L640 400L680 380Z" fill="#22C55E"/>
+</svg>

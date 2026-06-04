@@ -1,0 +1,68 @@
+{
+  "expo": {
+    "name": "CNG-App",
+    "slug": "cng-app",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "newArchEnabled": false,
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#111111"
+    },
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "de.cngapp",
+      "buildNumber": "1",
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "CNG-App needs your location to find nearby stations."
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#111111"
+      },
+      "config": {
+        "googleMaps": {
+          "apiKey": "GOOGLE_MAPS_API_KEY_PLACEHOLDER"
+        }
+      },
+      "package": "de.cngapp",
+      "versionCode": 1,
+      "edgeToEdgeEnabled": true,
+      "permissions": [
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION"
+      ]
+    },
+    "plugins": [
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "CNG-App benötigt deinen Standort um nahegelegene Tankstellen zu finden."
+        }
+      ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "46894f71-4768-461a-bf69-715a4c11898f"
+      }
+    },
+    "web": {
+      "favicon": "./assets/favicon.png",
+      "themeColor": "#111111",
+      "backgroundColor": "#111111",
+      "display": "standalone",
+      "orientation": "portrait",
+      "lang": "de",
+      "name": "CNG-App",
+      "shortName": "CNG-App",
+      "description": "Finde die nächsten CNG-Tankstellen."
+    }
+  }
+}

@@ -1,0 +1,28 @@
+services:
+  # Backend: API Proxy für CNG-Daten
+  - type: web
+    name: cng-proxy
+    runtime: node
+    rootDir: server
+    buildCommand: npm install
+    startCommand: npm start
+    plan: free
+    envVars:
+      - key: ALLOWED_ORIGIN
+        value: "*"
+      - key: NODE_ENV
+        value: production
+
+  # Frontend: Expo Web Static Site
+  - type: web
+    name: cng-app-web
+    runtime: static
+    buildCommand: npm install && npm run build:web
+    staticPublishPath: ./dist
+    envVars:
+      - key: EXPO_PUBLIC_PROXY_URL
+        sync: false
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html

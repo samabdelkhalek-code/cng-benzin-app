@@ -1,0 +1,25 @@
+# dependencies
+node_modules/
+server/node_modules/
+
+# build output (Render rebuilds these)
+dist/
+web-build/
+
+# expo
+.expo/
+.expo-shared/
+
+# native
+android/
+ios/
+
+# env & secrets
+.env
+.env.*
+!.env.example
+
+# misc
+*.log
+.DS_Store
+*.pem
