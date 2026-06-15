@@ -131,7 +131,7 @@ async function queryOverpass(
 ): Promise<Omit<Station, 'verified'>[]> {
   const fuelFilter = overpassFuelFilter(fuel);
   const q =
-    `[out:json][timeout:25];` +
+    `[out:json][timeout:30];` +
     `(node["amenity"="fuel"]${fuelFilter}(around:${radiusKm * 1000},${lat},${lng});` +
     `way["amenity"="fuel"]${fuelFilter}(around:${radiusKm * 1000},${lat},${lng});` +
     `relation["amenity"="fuel"]${fuelFilter}(around:${radiusKm * 1000},${lat},${lng});` +
@@ -145,7 +145,7 @@ async function queryOverpass(
         axios
           .get<OverpassResponse>(mirror, {
             params: { data: q },
-            timeout: 20000,
+            timeout: 28000,
             signal: controller.signal,
             headers: { 'User-Agent': 'CNG-App/2.0 (Mobile; discovery)' },
           })
@@ -349,6 +349,8 @@ function writeCache(lat: number, lng: number, radius: number, fuel: FuelType, da
 
 // ── Combined fetch ────────────────────────────────────────────────────────────
 
+const RADIUS_STEPS = [10, 20, 50];
+
 async function fetchStations(lat: number, lng: number, radius: number, fuel: FuelType): Promise<Station[]> {
   const cached = readCache(lat, lng, radius, fuel);
   if (cached) return cached;
@@ -358,6 +360,8 @@ async function fetchStations(lat: number, lng: number, radius: number, fuel: Fue
 
   // Use a smaller buffer now that coordinates are precise
   const fetchRadius = radius + 0.5;
+  // Larger radii return more elements from Overpass/the proxy; give them more time.
+  const priceTimeoutMs = Math.min(14_000 + radius * 200, 25_000);
 
   try {
     const [osmStations, priceSources] = await Promise.all([
@@ -365,16 +369,16 @@ async function fetchStations(lat: number, lng: number, radius: number, fuel: Fue
       Promise.race([
         axios.get<CTStation[]>(
           `${PROXY_BASE}/prices?lat=${lat.toFixed(6)}&lon=${lng.toFixed(6)}&r=${fetchRadius}&fuel=${fuel}`,
-          { timeout: 15_000 }
+          { timeout: priceTimeoutMs + 1000 }
         )
           .then(res => res.data),
-        timeout<CTStation[]>(14_000)
+        timeout<CTStation[]>(priceTimeoutMs)
       ])
     ]);
 
     const merged = mergeAndVerify(osmStations, priceSources || []);
     merged.forEach((s) => { if (s.price !== null) recordPrice(s.lat, s.lng, s.price, fuel); });
-    
+
     // Only cache if we actually got discovery results from Overpass,
     // or if the list is legitimately empty (to avoid caching temporary failures).
     // Actually, if queryOverpass didn't throw, it's a "success" even if empty.
@@ -382,6 +386,13 @@ async function fetchStations(lat: number, lng: number, radius: number, fuel: Fue
     return merged;
   } catch (err) {
     console.error('[fetchStations] Error:', err);
+    // A larger-radius query can fail (e.g. Overpass timeout on a bigger area)
+    // even though a smaller radius previously succeeded for this location.
+    // Fall back to the closest smaller radius' cache instead of showing nothing.
+    for (const r of RADIUS_STEPS.filter((r) => r < radius).sort((a, b) => b - a)) {
+      const fallback = readCache(lat, lng, r, fuel);
+      if (fallback) return fallback;
+    }
     return [];
   }
 }
