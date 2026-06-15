@@ -1,7 +1,7 @@
 import React, { useMemo } from 'react';
 import { View, ActivityIndicator, Text, StyleSheet } from 'react-native';
 import { useAppStore } from '../store/useAppStore';
-import { useStations } from '../services/gibgas';
+import { useStations, FUEL_META } from '../services/gibgas';
 import StationMap from '../components/StationMap';
 import { haversineKm } from '../utils/geo';
 
@@ -28,7 +28,7 @@ export default function MapScreen() {
   if (!activeLocation) {
     return (
       <View style={s.center}>
-        <ActivityIndicator color="#FF6B00" size="large" />
+        <ActivityIndicator color={FUEL_META[selectedFuel].accent} size="large" />
         <Text style={s.hint}>Standort wird ermittelt…</Text>
       </View>
     );

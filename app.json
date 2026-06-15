@@ -60,9 +60,9 @@
       "display": "standalone",
       "orientation": "portrait",
       "lang": "de",
-      "name": "CNG-App",
-      "shortName": "CNG-App",
-      "description": "Finde die nächsten CNG-Tankstellen."
+      "name": "CNG & Benzin",
+      "shortName": "CNG+Benzin",
+      "description": "Finde die nächsten CNG- und Benzin-Tankstellen mit aktuellen Preisen."
     }
   }
 }

@@ -23,10 +23,10 @@ L.Icon.Default.mergeOptions({
   shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
 });
 
-function stationIcon(label: string) {
+function stationIcon(label: string, color: string) {
   return L.divIcon({
     className: '',
-    html: `<div style="background:#FF6B00;color:#fff;font-size:11px;font-weight:700;padding:3px 7px;border-radius:6px;white-space:nowrap;box-shadow:0 2px 6px rgba(0,0,0,.4)">⛽ ${label}</div>`,
+    html: `<div style="background:${color};color:#fff;font-size:11px;font-weight:700;padding:3px 7px;border-radius:6px;white-space:nowrap;box-shadow:0 2px 6px rgba(0,0,0,.4)">⛽ ${label}</div>`,
     iconAnchor: [22, 12],
   });
 }
@@ -64,7 +64,7 @@ export default function StationMap({ userLat, userLng, stations, onStationPress 
         <Marker
           key={s.id}
           position={[s.lat, s.lng]}
-          icon={stationIcon(FUEL_META[s.fuel].label)}
+          icon={stationIcon(FUEL_META[s.fuel].label, FUEL_META[s.fuel].accent)}
           eventHandlers={{ click: () => onStationPress?.(s) }}
         >
           <Popup>

@@ -15,28 +15,27 @@ const queryClient = new QueryClient();
 
 type Tab = 'list' | 'map' | 'info';
 
-function TabBar({ activeTab, onSelect }: { activeTab: Tab; onSelect: (t: Tab) => void }) {
+function TabBar({ activeTab, onSelect, accent }: { activeTab: Tab; onSelect: (t: Tab) => void; accent: string }) {
   const insets = useSafeAreaInsets();
+  const items: { key: Tab; label: string }[] = [
+    { key: 'list', label: 'Liste' },
+    { key: 'map', label: 'Karte' },
+    { key: 'info', label: 'Info' },
+  ];
   return (
     <View style={[tab.bar, { paddingBottom: insets.bottom }]}>
-      <TouchableOpacity
-        style={[tab.btn, activeTab === 'list' && tab.btnActive]}
-        onPress={() => onSelect('list')}
-      >
-        <Text style={[tab.txt, activeTab === 'list' && tab.txtActive]}>Liste</Text>
-      </TouchableOpacity>
-      <TouchableOpacity
-        style={[tab.btn, activeTab === 'map' && tab.btnActive]}
-        onPress={() => onSelect('map')}
-      >
-        <Text style={[tab.txt, activeTab === 'map' && tab.txtActive]}>Karte</Text>
-      </TouchableOpacity>
-      <TouchableOpacity
-        style={[tab.btn, activeTab === 'info' && tab.btnActive]}
-        onPress={() => onSelect('info')}
-      >
-        <Text style={[tab.txt, activeTab === 'info' && tab.txtActive]}>Info</Text>
-      </TouchableOpacity>
+      {items.map(({ key, label }) => {
+        const on = activeTab === key;
+        return (
+          <TouchableOpacity
+            key={key}
+            style={[tab.btn, on && { borderTopColor: accent }]}
+            onPress={() => onSelect(key)}
+          >
+            <Text style={[tab.txt, on && { color: accent }]}>{label}</Text>
+          </TouchableOpacity>
+        );
+      })}
     </View>
   );
 }
@@ -47,6 +46,7 @@ function AppContent() {
   const [activeTab, setActiveTab] = useState<Tab>('list');
   const ready = status === 'approximate' || status === 'precise';
   const fuelLabel = FUEL_META[selectedFuel].label;
+  const accent = FUEL_META[selectedFuel].accent;
 
   const renderScreen = () => {
     switch (activeTab) {
@@ -64,7 +64,7 @@ function AppContent() {
       <View style={styles.header}>
         <Text style={styles.headerTitle}>⛽ {fuelLabel} Stationen</Text>
         {status === 'approximate' && (
-          <Text style={styles.headerApprox}>ungefährer Standort</Text>
+          <Text style={[styles.headerApprox, { color: accent }]}>ungefährer Standort</Text>
         )}
       </View>
 
@@ -86,7 +86,7 @@ function AppContent() {
             Standortzugriff wurde blockiert. Bitte in den Browser-Einstellungen erlauben und die Seite neu laden.
           </Text>
           <TouchableOpacity
-            style={styles.reloadBtn}
+            style={[styles.reloadBtn, { backgroundColor: accent }]}
             onPress={() => { if (Platform.OS === 'web') window.location.reload(); }}
           >
             <Text style={styles.reloadTxt}>Seite neu laden</Text>
@@ -99,7 +99,7 @@ function AppContent() {
           <View style={styles.screen}>
             {renderScreen()}
           </View>
-          <TabBar activeTab={activeTab} onSelect={setActiveTab} />
+          <TabBar activeTab={activeTab} onSelect={setActiveTab} accent={accent} />
         </>
       )}
     </SafeAreaView>

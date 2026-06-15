@@ -30,7 +30,7 @@ export default function StationMap({ userLat, userLng, stations, onStationPress 
           coordinate={{ latitude: s.lat, longitude: s.lng }}
           title={s.name}
           description={s.price !== null ? `${s.price.toFixed(3)} €/${FUEL_META[s.fuel].unit}` : 'Preis unbekannt'}
-          pinColor="#FF6B00"
+          pinColor={FUEL_META[s.fuel].accent}
           onCalloutPress={() => onStationPress?.(s)}
         />
       ))}
