@@ -303,14 +303,25 @@ export default function StationList() {
     return base;
   }, [stations, activeLocation, filterOpen, selectedRadius, selectedFuel]);
 
+  // Only stations confirmed by 2+ sources (OSM + a matching price source)
+  // go into the main list.
+  const verifiedRows = useMemo(() => rows.filter((r) => r.station.verified), [rows]);
+
   const sorted = useMemo((): Row[] => {
-    if (sort === 'distance') return [...rows].sort((a, b) => a.distanceKm - b.distanceKm);
-    return [...rows].sort((a, b) => {
+    if (sort === 'distance') return [...verifiedRows].sort((a, b) => a.distanceKm - b.distanceKm);
+    return [...verifiedRows].sort((a, b) => {
       if (a.station.price === null) return 1;
       if (b.station.price === null) return -1;
       return a.station.price - b.station.price;
     });
-  }, [rows, sort]);
+  }, [verifiedRows, sort]);
+
+  // Fallback when nothing is verified: still point to the nearest station so
+  // the user isn't left with an empty screen due to missing price-source data.
+  const nearestRow = useMemo((): Row | null => {
+    if (rows.length === 0) return null;
+    return [...rows].sort((a, b) => a.distanceKm - b.distanceKm)[0];
+  }, [rows]);
 
   const renderItem = useCallback(({ item }: { item: Row }) => <StationCard row={item} unit={fuelMeta.unit} />, [fuelMeta.unit]);
   const keyExtractor = useCallback((item: Row) => item.station.id, []);
@@ -348,7 +359,7 @@ export default function StationList() {
         </View>
       )}
 
-      {!isLoading && rows.length > 0 && <BestBanner rows={rows} unit={fuelMeta.unit} />}
+      {!isLoading && verifiedRows.length > 0 && <BestBanner rows={verifiedRows} unit={fuelMeta.unit} />}
 
       <View style={s.bar}>
         <Text style={s.barLabel}>Radius</Text>
@@ -392,6 +403,18 @@ export default function StationList() {
         <View style={s.center}>
           <Text style={s.errorTitle}>Fehler beim Laden</Text>
           <Text style={s.hint}>Bitte Internetverbindung prüfen.</Text>
+          <TouchableOpacity style={s.retryBtn} onPress={() => refetch()}>
+            <Text style={s.retryTxt}>Erneut versuchen</Text>
+          </TouchableOpacity>
+        </View>
+      ) : verifiedRows.length === 0 && nearestRow ? (
+        <View style={s.lowConfidence}>
+          <Text style={s.errorTitle}>Nicht genügend Daten</Text>
+          <Text style={s.hint}>
+            Für {fuelMeta.label}-Stationen im Umkreis liegen aktuell nicht genug Quellen zur Bestätigung vor.
+            Hier die nächstgelegene Station:
+          </Text>
+          <StationCard row={nearestRow} unit={fuelMeta.unit} />
           <TouchableOpacity style={s.retryBtn} onPress={() => refetch()}>
             <Text style={s.retryTxt}>Erneut versuchen</Text>
           </TouchableOpacity>
@@ -440,7 +463,8 @@ const s = StyleSheet.create({
   root: { flex: 1, backgroundColor: '#111' },
   center: { flex: 1, justifyContent: 'center', alignItems: 'center', gap: 14, padding: 28 },
   hint: { color: '#666', fontSize: 14, textAlign: 'center', lineHeight: 20 },
-  errorTitle: { color: '#EEE', fontSize: 17, fontWeight: '700' },
+  errorTitle: { color: '#EEE', fontSize: 17, fontWeight: '700', textAlign: 'center' },
+  lowConfidence: { flex: 1, padding: 16, gap: 12 },
   retryBtn: {
     marginTop: 4,
     paddingHorizontal: 20,

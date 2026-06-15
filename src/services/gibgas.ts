@@ -320,11 +320,10 @@ function mergeAndVerify(
       status: bestStatus,
       priceDate
     };
-  }).filter((s) => s.verified);
-  // Require at least 2 independent sources: OSM fuel-tag discovery PLUS a
-  // matching price source (gibgas/clever-tanken/E-Control/Tankerkönig).
-  // Stations that only appear in OSM (single source) are dropped to avoid
-  // listing stations that don't actually have the selected fuel.
+  });
+  // verified = confirmed by 2 independent sources (OSM fuel-tag + a matching
+  // price source). Unverified stations are kept so the UI can fall back to
+  // "nearest station" with a low-confidence notice if nothing is verified.
 }
 
 // ── Cache ─────────────────────────────────────────────────────────────────────
