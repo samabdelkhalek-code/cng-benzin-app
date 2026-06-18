@@ -2,8 +2,7 @@
 node_modules/
 server/node_modules/
 
-# build output (Render rebuilds these)
-dist/
+# build output
 web-build/
 
 # expo
