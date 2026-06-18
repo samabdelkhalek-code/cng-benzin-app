@@ -330,7 +330,7 @@ function mergeAndVerify(
 
 const CACHE_TTL_MS = 20 * 60 * 1000;
 const r1 = (n: number) => Math.round(n * 100) / 100; // Round to 2 decimal places (~1km)
-const cacheKey = (lat: number, lng: number, r: number, fuel: FuelType) => `${fuel}_v2_${r1(lat)}_${r1(lng)}_${r}`;
+const cacheKey = (lat: number, lng: number, r: number, fuel: FuelType) => `${fuel}_v3_${r1(lat)}_${r1(lng)}_${r}`;
 
 function readCache(lat: number, lng: number, radius: number, fuel: FuelType): Station[] | null {
   const raw = storage.getItem(cacheKey(lat, lng, radius, fuel));
