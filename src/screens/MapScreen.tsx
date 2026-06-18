@@ -23,17 +23,7 @@ export default function MapScreen() {
     const inRadius = stations.filter(s =>
       haversineKm(activeLocation.latitude, activeLocation.longitude, s.lat, s.lng) <= selectedRadius
     );
-    const verified = inRadius.filter(s => s.verified);
-    if (verified.length > 0) return verified;
-    // Fallback: nothing confirmed by 2 sources — show the nearest station anyway.
-    if (inRadius.length === 0) return [];
-    return [
-      [...inRadius].sort(
-        (a, b) =>
-          haversineKm(activeLocation.latitude, activeLocation.longitude, a.lat, a.lng) -
-          haversineKm(activeLocation.latitude, activeLocation.longitude, b.lat, b.lng)
-      )[0],
-    ];
+    return inRadius.filter(s => s.verified);
   }, [stations, activeLocation, selectedRadius]);
 
   if (!activeLocation) {

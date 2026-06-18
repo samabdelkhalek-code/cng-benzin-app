@@ -316,13 +316,6 @@ export default function StationList() {
     });
   }, [verifiedRows, sort]);
 
-  // Fallback when nothing is verified: still point to the nearest station so
-  // the user isn't left with an empty screen due to missing price-source data.
-  const nearestRow = useMemo((): Row | null => {
-    if (rows.length === 0) return null;
-    return [...rows].sort((a, b) => a.distanceKm - b.distanceKm)[0];
-  }, [rows]);
-
   const renderItem = useCallback(({ item }: { item: Row }) => <StationCard row={item} unit={fuelMeta.unit} />, [fuelMeta.unit]);
   const keyExtractor = useCallback((item: Row) => item.station.id, []);
 
@@ -407,18 +400,6 @@ export default function StationList() {
             <Text style={s.retryTxt}>Erneut versuchen</Text>
           </TouchableOpacity>
         </View>
-      ) : verifiedRows.length === 0 && nearestRow ? (
-        <View style={s.lowConfidence}>
-          <Text style={s.errorTitle}>Nicht genügend Daten</Text>
-          <Text style={s.hint}>
-            Für {fuelMeta.label}-Stationen im Umkreis liegen aktuell nicht genug Quellen zur Bestätigung vor.
-            Hier die nächstgelegene Station:
-          </Text>
-          <StationCard row={nearestRow} unit={fuelMeta.unit} />
-          <TouchableOpacity style={s.retryBtn} onPress={() => refetch()}>
-            <Text style={s.retryTxt}>Erneut versuchen</Text>
-          </TouchableOpacity>
-        </View>
       ) : (
         <FlatList
           data={sorted}
@@ -435,7 +416,10 @@ export default function StationList() {
           }
           ListEmptyComponent={
             <View style={s.center}>
-              <Text style={s.hint}>Keine {fuelMeta.label}-Stationen im Umkreis gefunden.</Text>
+              <Text style={s.hint}>
+                Keine verifizierten {fuelMeta.label}-Stationen im Umkreis.{'\n'}
+                Nur Stationen mit bestätigter {fuelMeta.label}-Verfügbarkeit werden angezeigt.
+              </Text>
               <TouchableOpacity style={s.retryBtn} onPress={() => setSelectedRadius(50)}>
                 <Text style={s.retryTxt}>Radius auf 50 km erweitern</Text>
               </TouchableOpacity>
@@ -464,7 +448,6 @@ const s = StyleSheet.create({
   center: { flex: 1, justifyContent: 'center', alignItems: 'center', gap: 14, padding: 28 },
   hint: { color: '#666', fontSize: 14, textAlign: 'center', lineHeight: 20 },
   errorTitle: { color: '#EEE', fontSize: 17, fontWeight: '700', textAlign: 'center' },
-  lowConfidence: { flex: 1, padding: 16, gap: 12 },
   retryBtn: {
     marginTop: 4,
     paddingHorizontal: 20,
