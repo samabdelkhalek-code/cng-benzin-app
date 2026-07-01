@@ -13,11 +13,10 @@ services:
       - key: NODE_ENV
         value: production
 
-  # Frontend: Expo Web Static Site
+  # Frontend: Expo Web Static Site (dist/ is pre-built and committed)
   - type: web
     name: cng-app-web
     runtime: static
-    buildCommand: npm install && npm run build:web
     staticPublishPath: ./dist
     envVars:
       - key: EXPO_PUBLIC_PROXY_URL
