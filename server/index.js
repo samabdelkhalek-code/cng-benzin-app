@@ -57,7 +57,26 @@ function parseGibgasData(data) {
   });
 }
 
-// ── E-Control (Official Austrian Spritpreisrechner) ──────────────────────────
+// ── In-memory cache for /prices (TTL: 15 min) ────────────────────────────────
+const priceCache = new Map();
+const PRICE_CACHE_TTL = 15 * 60 * 1000;
+
+function priceCacheKey(lat, lon, r, fuel) {
+  return `${fuel}_${Number(lat).toFixed(2)}_${Number(lon).toFixed(2)}_${Math.round(r)}`;
+}
+
+function readPriceCache(lat, lon, r, fuel) {
+  const entry = priceCache.get(priceCacheKey(lat, lon, r, fuel));
+  if (!entry) return null;
+  if (Date.now() - entry.ts > PRICE_CACHE_TTL) { priceCache.delete(priceCacheKey(lat, lon, r, fuel)); return null; }
+  return entry.data;
+}
+
+function writePriceCache(lat, lon, r, fuel, data) {
+  priceCache.set(priceCacheKey(lat, lon, r, fuel), { ts: Date.now(), data });
+}
+
+// ── E-Control (Österreich) ────────────────────────────────────────────────────
 function normalizeFuel(fuel) {
   return fuel === 'benzin' ? 'benzin' : 'cng';
 }
@@ -68,7 +87,9 @@ function fuelConfig(fuel) {
     : { econtrol: 'GAS', ct: 31 };
 }
 
+// E-Control only covers Austria — skip if clearly in Germany (lat > 47.6)
 async function fetchEControl(lat, lon, fuel = 'cng') {
+  if (Number(lat) > 47.6) return [];
   try {
     const cfg = fuelConfig(fuel);
     const url = `https://api.e-control.at/sprit/1.0/search/gas-stations/by-address?latitude=${lat}&longitude=${lon}&fuelType=${cfg.econtrol}&includeClosed=true`;
@@ -77,7 +98,7 @@ async function fetchEControl(lat, lon, fuel = 'cng') {
       lat: s.location.latitude,
       lng: s.location.longitude,
       price: s.prices?.[0]?.amount ?? null,
-      status: s.open === false ? 'closed' : 'active', // E-Control status is about opening hours
+      status: s.open === false ? 'closed' : 'active',
       source: 'econtrol'
     }));
   } catch (err) {
@@ -161,10 +182,13 @@ app.get('/prices', async (req, res) => {
   const { lat, lon, r = 25, fuel, benzinType = 'e5' } = req.query;
   if (!lat || !lon) return res.status(400).json({ error: 'lat and lon required' });
   const normalizedFuel = normalizeFuel(fuel);
-  const cfg = fuelConfig(normalizedFuel);
   const radius = Math.round(Number(r) || 25);
 
-  console.log(`[prices] ${normalizedFuel} around ${lat},${lon} r=${radius} (${r})`);
+  // Serve from in-memory cache when available — avoids repeated slow upstream calls
+  const cached = readPriceCache(lat, lon, radius, normalizedFuel);
+  if (cached) { res.json(cached); return; }
+
+  console.log(`[prices] ${normalizedFuel} around ${lat},${lon} r=${radius}`);
 
   // key = "lat3_lng3" (3dp ≈ 110m grid), value = best price entry
   const priceMap = new Map();
@@ -173,88 +197,58 @@ app.get('/prices', async (req, res) => {
     if (!entry?.lat || !entry?.lng) return;
     const key = `${Number(entry.lat).toFixed(3)}_${Number(entry.lng).toFixed(3)}`;
     const existing = priceMap.get(key);
-    
-    // Priority: econtrol > gibgas > ct
-    // Also prefer entries with status 'out_of_order' to warn users
     if (!existing) {
       priceMap.set(key, entry);
     } else {
-      // Benzin: Tankerkönig (official MTS-K) is most accurate. CNG: gibgas/econtrol.
-      const sourceRank = { tankerkoenig: 4, econtrol: 3, gibgas: 2, ct: 1 };
-      const currentRank = sourceRank[entry.source] || 0;
-      const existingRank = sourceRank[existing.source] || 0;
-      
+      const sourceRank = { tankerkoenig: 4, econtrol: 3, gibgas: 2 };
       if (entry.status === 'out_of_order') {
         priceMap.set(key, { ...entry, price: existing.price || entry.price });
-      } else if (currentRank > existingRank) {
+      } else if ((sourceRank[entry.source] || 0) > (sourceRank[existing.source] || 0)) {
         priceMap.set(key, entry);
       }
     }
   };
 
-  const priceTasks = [
-    // Source 1: gibgas.de — primary, ~90%+ coverage
+  const tasks = [
+    // gibgas.de — CNG primary, ~90%+ coverage Germany/AT
     normalizedFuel === 'cng'
       ? axios.get('https://www.gibgas.de/server.php', {
           params: { gimme: 'radius_pois', lat, lng: lon, r: radius },
-          timeout: 12_000,
+          timeout: 14_000,
           headers: { 'User-Agent': 'Mozilla/5.0 (compatible; cng-proxy/2.0)', Accept: 'application/json' },
         })
       : Promise.resolve(null),
-    // Source 2: clever-tanken — supplementary
-    axios.get('https://www.clever-tanken.de/tankstelle_liste_json', {
-      params: { lat, lon, r: radius, kraftstoff: cfg.ct },
-      timeout: 10_000,
-      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; cng-proxy/2.0)', Accept: 'application/json, text/plain, */*' },
-    }),
-    // Source 3: E-Control (AT only, but we call it anyway as it's fast)
+    // E-Control — Austria only (lat ≤ 47.6); skipped for German locations
     fetchEControl(lat, lon, normalizedFuel),
-    // Source 4: Tankerkönig — primary German petrol prices (benzin only).
-    // Gated on a real key: the demo key returns fake fixed prices, so we'd
-    // rather show "k.A." than mislead.
+    // Tankerkönig — German petrol prices, gated on a real API key
     normalizedFuel === 'benzin' && TANKERKOENIG_API_KEY !== TANKERKOENIG_DEMO_KEY
       ? fetchTankerkoenig(lat, lon, radius, benzinType)
-      : Promise.resolve([])
+      : Promise.resolve([]),
   ];
 
-  const [gibgasResult, ctResult, econtrolPrices, tankerkoenigPrices] = await Promise.allSettled(priceTasks);
+  const [gibgasResult, econtrolPrices, tankerkoenigPrices] = await Promise.allSettled(tasks);
 
   if (normalizedFuel === 'cng' && gibgasResult.status === 'fulfilled' && gibgasResult.value) {
     for (const entry of parseGibgasData(gibgasResult.value.data)) upsert(entry);
   }
-
-  if (ctResult.status === 'fulfilled') {
-    const raw = ctResult.value.data;
-    const list = Array.isArray(raw) ? raw : (raw?.stations ?? raw?.list ?? raw?.data ?? []);
-    for (const entry of list) {
-      const elat = entry.latitude ?? entry.lat ?? entry.breite;
-      const elng = entry.longitude ?? entry.lon ?? entry.lng ?? entry.laenge;
-      let price = null;
-      if (Array.isArray(entry.kraftstoffe)) {
-        const selected = entry.kraftstoffe.find((k) => Number(k.kraftstoff_id ?? k.id) === cfg.ct);
-        if (selected) price = parsePrice(String(selected.preis ?? selected.price ?? ''));
-      }
-      if (price === null) price = parsePrice(String(entry.preis ?? entry.kraftstoffPreis ?? entry.price ?? ''));
-      upsert({ lat: elat, lng: elng, price, source: 'ct', status: 'active' });
-    }
-  }
-
   if (econtrolPrices.status === 'fulfilled') {
     for (const entry of econtrolPrices.value) upsert(entry);
   }
-
   if (tankerkoenigPrices.status === 'fulfilled') {
     for (const entry of tankerkoenigPrices.value) upsert(entry);
   }
 
-  res.json([...priceMap.values()]);
+  const result = [...priceMap.values()];
+  if (result.length > 0) writePriceCache(lat, lon, radius, normalizedFuel, result);
+  res.json(result);
 });
 
 app.get('/health', (_req, res) =>
   res.json({
     ok: true,
-    sources: ['gibgas', 'ct', 'econtrol', 'tankerkoenig'],
+    sources: ['gibgas', 'econtrol(AT)', 'tankerkoenig'],
     tankerkoenigKey: TANKERKOENIG_API_KEY === TANKERKOENIG_DEMO_KEY ? 'demo' : 'configured',
+    priceCacheEntries: priceCache.size,
   })
 );
 

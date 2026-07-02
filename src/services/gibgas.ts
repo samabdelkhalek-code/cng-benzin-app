@@ -287,9 +287,11 @@ async function fetchGibgasStations(lat: number, lng: number, radiusKm: number): 
 //
 // Overpass fuel tags are the ONLY source of station discovery.
 // Price sources (gibgas + CT) enrich prices by proximity match.
-// Match radius 0.5 km: gibgas/OSM may have slightly different pin positions.
+// Match radius 1.0 km: OSM and gibgas pins for the same station can differ
+// by up to ~1 km. CNG stations are sparse enough that a 1 km window rarely
+// captures a different physical station.
 
-const MATCH_KM = 0.5;
+const MATCH_KM = 1.0;
 
 function mergeAndVerify(
   osmStations: Omit<Station, 'verified' | 'status'>[],
