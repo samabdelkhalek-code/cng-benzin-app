@@ -86,3 +86,17 @@ test('parseTankerkoenigStations: maps price, open status and source', () => {
   assert.equal(out[1].price, null);
   assert.equal(out[1].status, 'closed');
 });
+
+test('parseTankerkoenigStations: demo mode keeps stations but drops placeholder prices', () => {
+  const payload = {
+    ok: true,
+    stations: [
+      { lat: 48.1, lng: 11.5, price: 1.009, isOpen: true },
+      { lat: 48.2, lng: 11.6, price: 1.009, isOpen: true },
+    ],
+  };
+  const out = parseTankerkoenigStations(payload, true);
+  assert.equal(out.length, 2, 'stations still count as a confirming source');
+  assert.ok(out.every((s) => s.price === null), 'demo prices are not shown as real');
+  assert.ok(out.every((s) => s.source === 'tankerkoenig'));
+});

@@ -34,29 +34,44 @@ function parseRules(oh: string): Rule[] | null {
 
   const rules: Rule[] = [];
   for (const part of oh.split(';').map((s) => s.trim()).filter(Boolean)) {
-    const m = part.match(/^([A-Za-z,\-]+)\s+(\d{1,2}:\d{2})-(\d{1,2}:\d{2})$/);
+    const m = part.match(/^([A-Za-z,\-]+)\s+(.+)$/);
     if (!m) continue;
     const days = m[1].split(',').flatMap((s) => expandDayRange(s.trim()));
     if (!days.length) continue;
-    rules.push({ days, open: toMins(m[2]), close: toMins(m[3]) });
+    // A segment may carry several spans, e.g. "Mo-Fr 08:00-12:00,14:00-18:00"
+    for (const span of m[2].split(',')) {
+      const t = span.trim().match(/^(\d{1,2}:\d{2})-(\d{1,2}:\d{2})$/);
+      if (!t) continue;
+      rules.push({ days, open: toMins(t[1]), close: toMins(t[2]) });
+    }
   }
 
   return rules.length ? rules : null;
 }
 
-export function isOpenNow(openingHours: string | null): boolean | null {
+/** `now` is injectable so the clock-dependent branches stay testable. */
+export function isOpenNow(openingHours: string | null, now: Date = new Date()): boolean | null {
   if (!openingHours) return null;
   const rules = parseRules(openingHours);
   if (!rules) return null;
 
-  const now = new Date();
   const dow = now.getDay();
   const mins = now.getHours() * 60 + now.getMinutes();
+  const prevDow = dow === 0 ? 6 : dow - 1;
 
+  // Check every rule: a day can carry several spans (e.g. a lunch break), so we
+  // may only answer "closed" after none of them matched.
+  let dayCovered = false;
   for (const rule of rules) {
-    if (rule.days.includes(dow)) return mins >= rule.open && mins < rule.close;
+    const overnight = rule.close <= rule.open;
+    if (overnight && rule.days.includes(prevDow) && mins < rule.close) return true;
+    if (!rule.days.includes(dow)) continue;
+    dayCovered = true;
+    if (overnight ? mins >= rule.open : mins >= rule.open && mins < rule.close) return true;
   }
-  return null;
+  // No rule mentions today: the string may be only partially parsed, so we say
+  // "unknown" rather than wrongly badging the station as closed.
+  return dayCovered ? false : null;
 }
 
 export function fmtOpeningHours(oh: string | null): string | null {

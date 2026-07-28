@@ -113,13 +113,22 @@ async function fetchEControl(lat, lon, fuel = 'cng') {
 
 // Pure parser, split out for testing. Tankerkönig returns `price: false` for
 // stations that don't sell the requested fuel or are closed.
-function parseTankerkoenigStations(data) {
+//
+// The public demo key returns real station locations but a fixed placeholder
+// price for every station. In that mode we keep the stations (they are genuine
+// second-source confirmation that the station sells the fuel) and drop the
+// price, so the UI shows "k.A." instead of a made-up number.
+function parseTankerkoenigStations(data, demoMode = false) {
   if (!data?.ok || !Array.isArray(data.stations)) return [];
   return data.stations
     .map((s) => ({
       lat: s.lat,
       lng: s.lng,
-      price: typeof s.price === 'number' && s.price > 0 ? s.price : parsePrice(s.price),
+      price: demoMode
+        ? null
+        : typeof s.price === 'number' && s.price > 0
+          ? s.price
+          : parsePrice(s.price),
       status: s.isOpen === false ? 'closed' : 'active',
       source: 'tankerkoenig',
     }))
@@ -132,7 +141,7 @@ async function fetchTankerkoenig(lat, lon, r = 10, benzinType = 'e5') {
     const type = ['e5', 'e10', 'diesel'].includes(benzinType) ? benzinType : 'e5';
     const url = `https://creativecommons.tankerkoenig.de/json/list.php?lat=${lat}&lng=${lon}&rad=${rad}&sort=dist&type=${type}&apikey=${TANKERKOENIG_API_KEY}`;
     const { data } = await axios.get(url, { timeout: 9000, headers: { 'User-Agent': 'cng-app/1.0' } });
-    return parseTankerkoenigStations(data);
+    return parseTankerkoenigStations(data, TANKERKOENIG_API_KEY === TANKERKOENIG_DEMO_KEY);
   } catch (err) {
     console.error('[prices] Tankerkönig failed:', err.message);
     return [];
@@ -204,7 +213,8 @@ app.get('/prices', async (req, res) => {
       if (entry.status === 'out_of_order') {
         priceMap.set(key, { ...entry, price: existing.price || entry.price });
       } else if ((sourceRank[entry.source] || 0) > (sourceRank[existing.source] || 0)) {
-        priceMap.set(key, entry);
+        // A higher-ranked source without a price must not erase a known one
+        priceMap.set(key, entry.price == null && existing.price != null ? { ...entry, price: existing.price } : entry);
       }
     }
   };
@@ -220,8 +230,9 @@ app.get('/prices', async (req, res) => {
       : Promise.resolve(null),
     // E-Control — Austria only (lat ≤ 47.6); skipped for German locations
     fetchEControl(lat, lon, normalizedFuel),
-    // Tankerkönig — German petrol prices, gated on a real API key
-    normalizedFuel === 'benzin' && TANKERKOENIG_API_KEY !== TANKERKOENIG_DEMO_KEY
+    // Tankerkönig — German petrol stations. With the demo key it still confirms
+    // which stations exist and sell the fuel; only the prices are withheld.
+    normalizedFuel === 'benzin'
       ? fetchTankerkoenig(lat, lon, radius, benzinType)
       : Promise.resolve([]),
   ];
@@ -248,6 +259,7 @@ app.get('/health', (_req, res) =>
     ok: true,
     sources: ['gibgas', 'econtrol(AT)', 'tankerkoenig'],
     tankerkoenigKey: TANKERKOENIG_API_KEY === TANKERKOENIG_DEMO_KEY ? 'demo' : 'configured',
+    benzinPrices: TANKERKOENIG_API_KEY === TANKERKOENIG_DEMO_KEY ? 'stations only (demo key)' : 'live',
     priceCacheEntries: priceCache.size,
   })
 );
