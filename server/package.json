@@ -1,12 +1,13 @@
 {
   "name": "cng-proxy",
   "version": "1.0.0",
-  "description": "CORS proxy for clever-tanken CNG price data",
+  "description": "Station discovery and price aggregation proxy for the CNG app",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
     "dev": "node --watch index.js",
-    "test": "node --test"
+    "test": "node --test",
+    "seed": "node seed.js"
   },
   "type": "commonjs",
   "license": "ISC",

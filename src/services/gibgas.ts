@@ -123,7 +123,49 @@ function overpassFuelFilter(fuel: FuelType): string {
   return '["fuel:octane_95"="yes"]';
 }
 
-async function queryOverpass(
+/** Shape returned by the proxy's /stations endpoint. */
+interface ProxyStation {
+  id: string;
+  name: string | null;
+  address: string;
+  city: string;
+  lat: number;
+  lng: number;
+  openingHours: string | null;
+}
+
+/**
+ * Station discovery. The proxy is tried first: it keeps a 24 h server-side
+ * cache and serves stale data while Overpass is down, which is what keeps the
+ * list populated during the frequent Overpass 504s. Direct mirrors remain as a
+ * fallback for when the proxy itself is unreachable.
+ */
+async function fetchStationsFromProxy(
+  lat: number,
+  lng: number,
+  radiusKm: number,
+  fuel: FuelType
+): Promise<Omit<Station, 'verified'>[]> {
+  const { data } = await axios.get<ProxyStation[]>(`${PROXY_BASE}/stations`, {
+    params: { lat: lat.toFixed(6), lon: lng.toFixed(6), r: Math.ceil(radiusKm), fuel },
+    timeout: 30_000,
+  });
+  if (!Array.isArray(data)) throw new Error('Invalid /stations response');
+  return data.map((s) => ({
+    id: s.id,
+    name: s.name ?? FUEL_META[fuel].stationLabel,
+    address: s.address ?? '',
+    city: s.city ?? '',
+    lat: s.lat,
+    lng: s.lng,
+    price: null,
+    openingHours: s.openingHours ?? null,
+    status: 'active' as const,
+    fuel,
+  }));
+}
+
+async function queryOverpassDirect(
   lat: number,
   lng: number,
   radiusKm: number,
@@ -159,6 +201,20 @@ async function queryOverpass(
   } catch (err) {
     if (err instanceof AggregateError) throw err.errors[err.errors.length - 1];
     throw err;
+  }
+}
+
+async function queryOverpass(
+  lat: number,
+  lng: number,
+  radiusKm: number,
+  fuel: FuelType
+): Promise<Omit<Station, 'verified'>[]> {
+  try {
+    return await fetchStationsFromProxy(lat, lng, radiusKm, fuel);
+  } catch (err) {
+    console.warn('[stations] proxy unavailable, querying Overpass directly:', err);
+    return queryOverpassDirect(lat, lng, radiusKm, fuel);
   }
 }
 
