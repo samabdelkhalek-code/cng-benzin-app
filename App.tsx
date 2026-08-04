@@ -156,7 +156,5 @@ const tab = StyleSheet.create({
     borderTopWidth: 2,
     borderTopColor: 'transparent',
   },
-  btnActive: { borderTopColor: '#FF6B00' },
   txt: { color: '#555', fontSize: 13, fontWeight: '700' },
-  txtActive: { color: '#FF6B00' },
 });

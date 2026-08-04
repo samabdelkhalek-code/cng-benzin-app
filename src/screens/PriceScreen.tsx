@@ -362,8 +362,8 @@ export default function StationList() {
       <View style={fuelTabs.wrap}>
         {FUEL_OPTIONS.map((fuel) => {
           const on = selectedFuel === fuel;
-          // Each tab previews its own fuel's colour, so the choice is legible
-          // before it is made.
+          // The active tab takes its own fuel's accent rather than the screen's,
+          // so CNG always highlights orange and Benzin green.
           const tabAccent = FUEL_META[fuel].accent;
           return (
             <TouchableOpacity
