@@ -44,7 +44,7 @@ function fmtDelta(delta: number): string {
 
 // ── Search Bar ───────────────────────────────────────────────────────────────
 
-function SearchBar() {
+function SearchBar({ accent }: { accent: string }) {
   const { setSearchLocation, searchLocation } = useAppStore();
   const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(false);
@@ -82,9 +82,9 @@ function SearchBar() {
         returnKeyType="search"
       />
       {loading ? (
-        <ActivityIndicator color="#FF6B00" style={search.icon} />
+        <ActivityIndicator color={accent} style={search.icon} />
       ) : (
-        <TouchableOpacity onPress={handleSearch} style={search.btn}>
+        <TouchableOpacity onPress={handleSearch} style={[search.btn, { backgroundColor: accent }]}>
           <Text style={search.btnText}>Suchen</Text>
         </TouchableOpacity>
       )}
@@ -108,7 +108,17 @@ interface Row {
 
 // ── Station card ──────────────────────────────────────────────────────────────
 
-function StationCard({ row, unit }: { row: Row; unit: string }) {
+function StationCard({
+  row,
+  unit,
+  accent,
+  accentDark,
+}: {
+  row: Row;
+  unit: string;
+  accent: string;
+  accentDark: string;
+}) {
   const { station, distanceKm, trend, isOpen } = row;
   const isOutOfOrder = station.status === 'out_of_order';
   
@@ -162,7 +172,13 @@ function StationCard({ row, unit }: { row: Row; unit: string }) {
             </View>
 
             {station.price !== null ? (
-              <View style={[card.badge, card.priceBadge, isOutOfOrder && card.priceBadgeMuted]}>
+              <View
+                style={[
+                  card.badge,
+                  { backgroundColor: accent },
+                  isOutOfOrder && card.priceBadgeMuted,
+                ]}
+              >
                 <Text style={card.priceBadgeText}>{fmtPrice(station.price)} €/{unit}</Text>
               </View>
             ) : (
@@ -208,7 +224,7 @@ function StationCard({ row, unit }: { row: Row; unit: string }) {
       </View>
 
       <Pressable
-        style={({ pressed }) => [card.navBtn, pressed && card.navBtnPressed]}
+        style={({ pressed }) => [card.navBtn, { backgroundColor: pressed ? accentDark : accent }]}
         onPress={() => navigate(station.lat, station.lng)}
       >
         <Text style={card.navText}>In Google Maps navigieren →</Text>
@@ -219,7 +235,7 @@ function StationCard({ row, unit }: { row: Row; unit: string }) {
 
 // ── Best-stations banner ──────────────────────────────────────────────────────
 
-function BestBanner({ rows, unit }: { rows: Row[]; unit: string }) {
+function BestBanner({ rows, unit, accent }: { rows: Row[]; unit: string; accent: string }) {
   const activeRows = rows.filter(r => r.station.status !== 'out_of_order');
   const withPrice = activeRows.filter((r) => r.station.price !== null);
   
@@ -246,12 +262,17 @@ function BestBanner({ rows, unit }: { rows: Row[]; unit: string }) {
       )}
       {cheapest && (
         <Pressable
-          style={({ pressed }) => [banner.card, banner.orange, pressed && { opacity: 0.75 }]}
+          style={({ pressed }) => [
+            banner.card,
+            banner.accentCard,
+            { borderColor: accent },
+            pressed && { opacity: 0.75 },
+          ]}
           onPress={() => navigate(cheapest.station.lat, cheapest.station.lng)}
         >
-          <Text style={[banner.label, banner.labelOrange]}>GÜNSTIGSTE</Text>
+          <Text style={[banner.label, { color: accent }]}>GÜNSTIGSTE</Text>
           <Text style={banner.stName} numberOfLines={1}>{cheapest.station.name}</Text>
-          <Text style={[banner.value, banner.valueOrange]}>
+          <Text style={[banner.value, { color: accent }]}>
             {fmtPrice(cheapest.station.price!)} €/{unit} · {cheapest.distanceKm.toFixed(1)} km
           </Text>
         </Pressable>
@@ -277,6 +298,7 @@ export default function StationList() {
 
   const activeLocation = searchLocation || userLocation;
   const fuelMeta = FUEL_META[selectedFuel];
+  const { accent, accentDark } = fuelMeta;
 
   const { data: stations = [], isLoading, isFetching, refetch, error } = useStations(
     activeLocation?.latitude ?? null,
@@ -316,13 +338,18 @@ export default function StationList() {
     });
   }, [verifiedRows, sort]);
 
-  const renderItem = useCallback(({ item }: { item: Row }) => <StationCard row={item} unit={fuelMeta.unit} />, [fuelMeta.unit]);
+  const renderItem = useCallback(
+    ({ item }: { item: Row }) => (
+      <StationCard row={item} unit={fuelMeta.unit} accent={accent} accentDark={accentDark} />
+    ),
+    [fuelMeta.unit, accent, accentDark]
+  );
   const keyExtractor = useCallback((item: Row) => item.station.id, []);
 
   if (!activeLocation) {
     return (
       <View style={s.center}>
-        <ActivityIndicator color="#FF6B00" size="large" />
+        <ActivityIndicator color={accent} size="large" />
         <Text style={s.hint}>Standort wird ermittelt…</Text>
       </View>
     );
@@ -330,20 +357,24 @@ export default function StationList() {
 
   return (
     <View style={s.root}>
-      <SearchBar />
+      <SearchBar accent={accent} />
 
       <View style={fuelTabs.wrap}>
-        {FUEL_OPTIONS.map((fuel) => (
-          <TouchableOpacity
-            key={fuel}
-            style={[fuelTabs.btn, selectedFuel === fuel && fuelTabs.btnOn]}
-            onPress={() => setSelectedFuel(fuel)}
-          >
-            <Text style={[fuelTabs.txt, selectedFuel === fuel && fuelTabs.txtOn]}>
-              {FUEL_META[fuel].label}
-            </Text>
-          </TouchableOpacity>
-        ))}
+        {FUEL_OPTIONS.map((fuel) => {
+          const on = selectedFuel === fuel;
+          // Each tab previews its own fuel's colour, so the choice is legible
+          // before it is made.
+          const tabAccent = FUEL_META[fuel].accent;
+          return (
+            <TouchableOpacity
+              key={fuel}
+              style={[fuelTabs.btn, on && { backgroundColor: tabAccent, borderColor: tabAccent }]}
+              onPress={() => setSelectedFuel(fuel)}
+            >
+              <Text style={[fuelTabs.txt, on && fuelTabs.txtOn]}>{FUEL_META[fuel].label}</Text>
+            </TouchableOpacity>
+          );
+        })}
       </View>
       
       {searchLocation && (
@@ -352,14 +383,16 @@ export default function StationList() {
         </View>
       )}
 
-      {!isLoading && verifiedRows.length > 0 && <BestBanner rows={verifiedRows} unit={fuelMeta.unit} />}
+      {!isLoading && verifiedRows.length > 0 && (
+        <BestBanner rows={verifiedRows} unit={fuelMeta.unit} accent={accent} />
+      )}
 
       <View style={s.bar}>
         <Text style={s.barLabel}>Radius</Text>
         {RADIUS_OPTIONS.map((r) => (
           <TouchableOpacity
             key={r}
-            style={[s.chip, selectedRadius === r && s.chipOn]}
+            style={[s.chip, selectedRadius === r && { backgroundColor: accent }]}
             onPress={() => setSelectedRadius(r)}
           >
             <Text style={[s.chipTxt, selectedRadius === r && s.chipTxtOn]}>{r} km</Text>
@@ -367,20 +400,20 @@ export default function StationList() {
         ))}
         <View style={s.sep} />
         <TouchableOpacity
-          style={[s.chip, filterOpen && s.chipOn]}
+          style={[s.chip, filterOpen && { backgroundColor: accent }]}
           onPress={() => setFilterOpen(!filterOpen)}
         >
           <Text style={[s.chipTxt, filterOpen && s.chipTxtOn]}>Nur Offene</Text>
         </TouchableOpacity>
         <View style={s.sep} />
         <TouchableOpacity
-          style={[s.chip, sort === 'distance' && s.chipOn]}
+          style={[s.chip, sort === 'distance' && { backgroundColor: accent }]}
           onPress={() => setSort('distance')}
         >
           <Text style={[s.chipTxt, sort === 'distance' && s.chipTxtOn]}>Entfernung</Text>
         </TouchableOpacity>
         <TouchableOpacity
-          style={[s.chip, sort === 'price' && s.chipOn]}
+          style={[s.chip, sort === 'price' && { backgroundColor: accent }]}
           onPress={() => setSort('price')}
         >
           <Text style={[s.chipTxt, sort === 'price' && s.chipTxtOn]}>Preis</Text>
@@ -389,14 +422,14 @@ export default function StationList() {
 
       {isLoading ? (
         <View style={s.center}>
-          <ActivityIndicator color="#FF6B00" size="large" />
+          <ActivityIndicator color={accent} size="large" />
           <Text style={s.hint}>Lade Stationen…</Text>
         </View>
       ) : error ? (
         <View style={s.center}>
           <Text style={s.errorTitle}>Fehler beim Laden</Text>
           <Text style={s.hint}>Bitte Internetverbindung prüfen.</Text>
-          <TouchableOpacity style={s.retryBtn} onPress={() => refetch()}>
+          <TouchableOpacity style={[s.retryBtn, { backgroundColor: accent }]} onPress={() => refetch()}>
             <Text style={s.retryTxt}>Erneut versuchen</Text>
           </TouchableOpacity>
         </View>
@@ -410,8 +443,8 @@ export default function StationList() {
             <RefreshControl
               refreshing={isFetching && !isLoading}
               onRefresh={refetch}
-              tintColor="#FF6B00"
-              colors={['#FF6B00']}
+              tintColor={accent}
+              colors={[accent]}
             />
           }
           ListEmptyComponent={
@@ -420,7 +453,10 @@ export default function StationList() {
                 Keine verifizierten {fuelMeta.label}-Stationen im Umkreis.{'\n'}
                 Nur Stationen mit bestätigter {fuelMeta.label}-Verfügbarkeit werden angezeigt.
               </Text>
-              <TouchableOpacity style={s.retryBtn} onPress={() => setSelectedRadius(50)}>
+              <TouchableOpacity
+                style={[s.retryBtn, { backgroundColor: accent }]}
+                onPress={() => setSelectedRadius(50)}
+              >
                 <Text style={s.retryTxt}>Radius auf 50 km erweitern</Text>
               </TouchableOpacity>
             </View>
@@ -436,7 +472,7 @@ export default function StationList() {
 const search = StyleSheet.create({
   wrap: { flexDirection: 'row', backgroundColor: '#1A1A1A', padding: 10, alignItems: 'center', gap: 8, borderBottomWidth: 1, borderBottomColor: '#2A2A2A' },
   input: { flex: 1, height: 40, backgroundColor: '#2A2A2A', borderRadius: 8, paddingHorizontal: 12, color: '#EEE', fontSize: 14 },
-  btn: { backgroundColor: '#FF6B00', height: 40, paddingHorizontal: 16, borderRadius: 8, justifyContent: 'center' },
+  btn: { height: 40, paddingHorizontal: 16, borderRadius: 8, justifyContent: 'center' },
   btnText: { color: '#FFF', fontWeight: '700', fontSize: 13 },
   icon: { width: 40 },
   clear: { padding: 8 },
@@ -452,7 +488,6 @@ const s = StyleSheet.create({
     marginTop: 4,
     paddingHorizontal: 20,
     paddingVertical: 10,
-    backgroundColor: '#FF6B00',
     borderRadius: 10,
   },
   retryTxt: { color: '#FFF', fontWeight: '700', fontSize: 14 },
@@ -471,7 +506,6 @@ const s = StyleSheet.create({
   },
   barLabel: { color: '#666', fontSize: 12 },
   chip: { paddingHorizontal: 12, paddingVertical: 5, borderRadius: 14, backgroundColor: '#2A2A2A' },
-  chipOn: { backgroundColor: '#FF6B00' },
   chipTxt: { color: '#777', fontSize: 12, fontWeight: '600' },
   chipTxtOn: { color: '#FFF' },
   sep: { width: 1, height: 16, backgroundColor: '#333' },
@@ -498,7 +532,6 @@ const fuelTabs = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#303030',
   },
-  btnOn: { backgroundColor: '#FF6B00', borderColor: '#FF6B00' },
   txt: { color: '#888', fontSize: 13, fontWeight: '800' },
   txtOn: { color: '#FFF' },
 });
@@ -514,14 +547,12 @@ const banner = StyleSheet.create({
   },
   card: { flex: 1, borderWidth: 1, borderRadius: 10, padding: 11 },
   blue: { backgroundColor: '#001829', borderColor: '#3B82F6' },
-  orange: { backgroundColor: '#1A0C00', borderColor: '#FF6B00' },
+  accentCard: { backgroundColor: '#141010' },
   label: { fontSize: 9, fontWeight: '800', letterSpacing: 1, marginBottom: 4 },
   labelBlue: { color: '#60A5FA' },
-  labelOrange: { color: '#FF6B00' },
   stName: { color: '#EEE', fontSize: 13, fontWeight: '700', marginBottom: 3 },
   value: { fontSize: 13, fontWeight: '700' },
   valueBlue: { color: '#60A5FA' },
-  valueOrange: { color: '#FF6B00' },
 });
 
 const card = StyleSheet.create({
@@ -547,7 +578,6 @@ const card = StyleSheet.create({
   badgeText: { color: '#AAA', fontSize: 12, fontWeight: '600' },
   badgeTextMuted: { color: '#444', fontSize: 12, fontWeight: '600' },
 
-  priceBadge: { backgroundColor: '#FF6B00' },
   priceBadgeMuted: { backgroundColor: '#444' },
   priceBadgeText: { color: '#FFF', fontSize: 13, fontWeight: '800' },
 
@@ -562,7 +592,6 @@ const card = StyleSheet.create({
   rangeText: { color: '#555', fontSize: 11, marginTop: 6 },
   hoursText: { color: '#555', fontSize: 11, marginTop: 3 },
 
-  navBtn: { backgroundColor: '#FF6B00', paddingVertical: 11, alignItems: 'center' },
-  navBtnPressed: { backgroundColor: '#CC5200' },
+  navBtn: { paddingVertical: 11, alignItems: 'center' },
   navText: { color: '#FFF', fontSize: 14, fontWeight: '700', letterSpacing: 0.2 },
 });
