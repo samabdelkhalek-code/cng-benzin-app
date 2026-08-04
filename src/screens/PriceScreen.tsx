@@ -329,6 +329,13 @@ export default function StationList() {
   // go into the main list.
   const verifiedRows = useMemo(() => rows.filter((r) => r.station.verified), [rows]);
 
+  // Stations are confirmed but no source carries a price for them, so the
+  // repeated "k.A." would otherwise read as a bug rather than missing data.
+  const noPricesAvailable = useMemo(
+    () => verifiedRows.length > 0 && verifiedRows.every((r) => r.station.price === null),
+    [verifiedRows]
+  );
+
   const sorted = useMemo((): Row[] => {
     if (sort === 'distance') return [...verifiedRows].sort((a, b) => a.distanceKm - b.distanceKm);
     return [...verifiedRows].sort((a, b) => {
@@ -380,6 +387,14 @@ export default function StationList() {
       {searchLocation && (
         <View style={s.searchLocBox}>
           <Text style={s.searchLocTxt} numberOfLines={1}>📍 Zeige Stationen bei: {searchLocation.label}</Text>
+        </View>
+      )}
+
+      {!isLoading && noPricesAvailable && (
+        <View style={s.noticeBox}>
+          <Text style={s.noticeTxt}>
+            Für {fuelMeta.label} liegen derzeit keine Preisdaten vor. Stationen und Öffnungszeiten sind aktuell.
+          </Text>
         </View>
       )}
 
@@ -492,6 +507,14 @@ const s = StyleSheet.create({
   },
   retryTxt: { color: '#FFF', fontWeight: '700', fontSize: 14 },
   searchLocBox: { backgroundColor: '#222', paddingVertical: 6, paddingHorizontal: 14, borderBottomWidth: 1, borderBottomColor: '#333' },
+  noticeBox: {
+    backgroundColor: '#1E1A0A',
+    borderLeftWidth: 3,
+    borderLeftColor: '#A16207',
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+  },
+  noticeTxt: { color: '#CA8A04', fontSize: 12, lineHeight: 17 },
   searchLocTxt: { color: '#AAA', fontSize: 11, fontWeight: '600' },
   bar: {
     flexDirection: 'row',

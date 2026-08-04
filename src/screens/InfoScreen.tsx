@@ -25,9 +25,13 @@ export default function InfoScreen() {
 
       <View style={s.section}>
         <Text style={s.label}>Datenquellen</Text>
-        <Text style={s.text}>• Stationen: OpenStreetMap (Overpass API)</Text>
-        <Text style={s.text}>• Preise: gibgas.de & clever-tanken.de</Text>
+        <Text style={s.text}>• Stationen: OpenStreetMap (ODbL), via Overpass</Text>
+        <Text style={s.text}>• CNG-Preise: gibgas.de</Text>
+        <Text style={s.text}>• Benzin-Preise: Tankerkönig (CC BY 4.0)</Text>
         <Text style={s.text}>• Österreich-Preise: E-Control</Text>
+        <Text style={s.textMuted}>
+          Eine Station wird nur angezeigt, wenn zwei unabhängige Quellen sie bestätigen.
+        </Text>
       </View>
 
       <View style={s.section}>
@@ -63,6 +67,7 @@ const s = StyleSheet.create({
   description: { color: '#AAA', fontSize: 15, lineHeight: 22 },
   label: { color: '#FF6B00', fontSize: 12, fontWeight: '800', letterSpacing: 1, textTransform: 'uppercase', marginBottom: 10 },
   text: { color: '#EEE', fontSize: 14, marginBottom: 6, lineHeight: 20 },
+  textMuted: { color: '#777', fontSize: 12, marginTop: 4, lineHeight: 18 },
   link: { color: '#3B82F6', fontSize: 15, fontWeight: '600', marginBottom: 12 },
   footer: { marginTop: 20, alignItems: 'center' },
   footerText: { color: '#444', fontSize: 12 },
