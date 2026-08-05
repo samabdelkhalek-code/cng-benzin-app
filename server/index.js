@@ -340,15 +340,50 @@ function parseTankerkoenigStations(data, demoMode = false) {
     .filter((s) => s.lat != null && s.lng != null);
 }
 
+// Reflects what the last Tankerkönig call actually achieved, so /health can
+// report whether a configured key really works instead of merely being set.
+let tankerkoenigStatus =
+  TANKERKOENIG_API_KEY === TANKERKOENIG_DEMO_KEY ? 'stations only (demo key)' : 'configured, not yet used';
+
+async function fetchTankerkoenigWithKey(lat, lon, rad, type, apiKey) {
+  const url = `https://creativecommons.tankerkoenig.de/json/list.php?lat=${lat}&lng=${lon}&rad=${rad}&sort=dist&type=${type}&apikey=${apiKey}`;
+  const { data } = await axios.get(url, { timeout: 9000, headers: { 'User-Agent': 'cng-app/1.0' } });
+  if (!data?.ok) throw new Error(data?.message || 'Tankerkönig rejected the request');
+  return parseTankerkoenigStations(data, apiKey === TANKERKOENIG_DEMO_KEY);
+}
+
+/**
+ * Benzin stations from Tankerkönig (MTS-K data, CC BY 4.0).
+ *
+ * A configured key yields real prices. If that key is rejected — wrong,
+ * expired, or over quota — we fall back to the public demo key, which returns
+ * genuine station locations with a placeholder price that
+ * `parseTankerkoenigStations` strips. That keeps Benzin showing confirmed
+ * stations instead of emptying the tab because of a bad key.
+ */
 async function fetchTankerkoenig(lat, lon, r = 10, benzinType = 'e5') {
+  const rad = Math.min(Number(r) || 10, 25); // API hard limit
+  const type = ['e5', 'e10', 'diesel'].includes(benzinType) ? benzinType : 'e5';
+  const usingRealKey = TANKERKOENIG_API_KEY !== TANKERKOENIG_DEMO_KEY;
+
   try {
-    const rad = Math.min(Number(r) || 10, 25); // API hard limit
-    const type = ['e5', 'e10', 'diesel'].includes(benzinType) ? benzinType : 'e5';
-    const url = `https://creativecommons.tankerkoenig.de/json/list.php?lat=${lat}&lng=${lon}&rad=${rad}&sort=dist&type=${type}&apikey=${TANKERKOENIG_API_KEY}`;
-    const { data } = await axios.get(url, { timeout: 9000, headers: { 'User-Agent': 'cng-app/1.0' } });
-    return parseTankerkoenigStations(data, TANKERKOENIG_API_KEY === TANKERKOENIG_DEMO_KEY);
+    const stations = await fetchTankerkoenigWithKey(lat, lon, rad, type, TANKERKOENIG_API_KEY);
+    tankerkoenigStatus = usingRealKey ? 'live' : 'stations only (demo key)';
+    return stations;
   } catch (err) {
     console.error('[prices] Tankerkönig failed:', err.message);
+    if (!usingRealKey) {
+      tankerkoenigStatus = `demo key failed: ${err.message}`;
+      return [];
+    }
+    tankerkoenigStatus = `key rejected (${err.message}) — falling back to stations only`;
+  }
+
+  try {
+    console.warn('[prices] falling back to the Tankerkönig demo key (stations only)');
+    return await fetchTankerkoenigWithKey(lat, lon, rad, type, TANKERKOENIG_DEMO_KEY);
+  } catch (err) {
+    console.error('[prices] Tankerkönig demo fallback failed:', err.message);
     return [];
   }
 }
@@ -458,7 +493,7 @@ app.get('/health', (_req, res) =>
     ok: true,
     sources: ['gibgas', 'econtrol(AT)', 'tankerkoenig'],
     tankerkoenigKey: TANKERKOENIG_API_KEY === TANKERKOENIG_DEMO_KEY ? 'demo' : 'configured',
-    benzinPrices: TANKERKOENIG_API_KEY === TANKERKOENIG_DEMO_KEY ? 'stations only (demo key)' : 'live',
+    benzinPrices: tankerkoenigStatus,
     priceCacheEntries: priceCache.size,
     stationCacheEntries: stationCache.size,
     seedStations: Object.fromEntries(
