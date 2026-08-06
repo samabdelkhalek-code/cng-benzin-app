@@ -12,6 +12,12 @@ services:
         value: "*"
       - key: NODE_ENV
         value: production
+      # Free key from https://onboarding.tankerkoenig.de — enables real Benzin
+      # prices. sync: false keeps the value in the dashboard, never in the repo.
+      # Without it the proxy uses the public demo key, which returns genuine
+      # stations but a placeholder price that is withheld from the UI.
+      - key: TANKERKOENIG_API_KEY
+        sync: false
 
   # Frontend: Expo Web Static Site (dist/ is pre-built and committed)
   - type: web
