@@ -15,6 +15,9 @@ const {
   haversineKm,
   sampleCenters,
   priceCacheKey,
+  parseMimitCsv,
+  buildMimitIndex,
+  nearItaly,
   cacheSet,
   cacheGet,
   MAX_CACHE_ENTRIES,
@@ -269,4 +272,61 @@ test('cacheSet: re-writing a key refreshes its position, not the cache size', ()
   assert.equal(m.size, 2);
   assert.equal(cacheGet(m, 'a', 60_000).data, 3);
   assert.deepEqual([...m.keys()], ['b', 'a'], 'the rewritten key moves to the end');
+});
+
+// ── Osservaprezzi / MIMIT (Italien) ──────────────────────────────────────────
+
+const ANAGRAFICA = [
+  'Estrazione del 2026-10-03',
+  'idImpianto|Gestore|Bandiera|Tipo Impianto|Nome Impianto|Indirizzo|Comune|Provincia|Latitudine|Longitudine',
+  '1|G|Eni|Stradale|VANDOIES|Via X|VANDOIES|BZ|46.8141|11.7219',
+  '2|G|Tamoil|Stradale|BADIA|Via Y|BADIA|BZ|46.6049|11.8959',
+  '3|G|Q8|Stradale|OHNE KOORD|Via Z|ROMA|RM||',
+  '4|G|Esso|Stradale|NUR BENZIN|Via W|MILANO|MI|45.4642|9.1900',
+].join('\n');
+
+const PREZZI = [
+  'Estrazione del 2026-10-03',
+  'idImpianto|descCarburante|prezzo|isSelf|dtComu',
+  '1|Metano|1.999|0|01/10/2026 20:00:06',
+  '2|Metano|1.950|0|01/10/2026 20:00:06',
+  '2|Benzina|2.340|0|01/10/2026 20:00:06',
+  '3|Metano|1.800|0|01/10/2026 20:00:06',
+  '4|Benzina|2.100|0|01/10/2026 20:00:06',
+].join('\n');
+
+test('parseMimitCsv: skips the extraction line and splits on pipes', () => {
+  const rows = parseMimitCsv(PREZZI);
+  assert.equal(rows.length, 5);
+  assert.equal(rows[0].idImpianto, '1');
+  assert.equal(rows[0].descCarburante, 'Metano');
+  assert.equal(rows[0].prezzo, '1.999');
+});
+
+test('parseMimitCsv: tolerates empty input', () => {
+  assert.deepEqual(parseMimitCsv(''), []);
+  assert.deepEqual(parseMimitCsv('nur eine Zeile'), []);
+});
+
+test('buildMimitIndex: keeps only Metano stations that have coordinates', () => {
+  const out = buildMimitIndex(ANAGRAFICA, PREZZI);
+  const ids = out.map((s) => `${s.lat},${s.lng}`);
+
+  assert.equal(out.length, 2, 'petrol-only and coordinate-less stations drop out');
+  assert.ok(ids.includes('46.8141,11.7219'), 'Vandoies is kept');
+  assert.ok(ids.includes('46.6049,11.8959'), 'Badia is kept');
+  assert.ok(out.every((s) => s.source === 'mimit' && s.status === 'active'));
+});
+
+test('buildMimitIndex: a station with several pumps keeps the cheapest Metano price', () => {
+  const prezzi = PREZZI + '\n1|Metano|1.899|1|01/10/2026 20:00:06';
+  const vandoies = buildMimitIndex(ANAGRAFICA, prezzi).find((s) => s.lat === 46.8141);
+  assert.equal(vandoies.price, 1.899);
+});
+
+test('nearItaly: gates the download to the Italian bounding box', () => {
+  assert.equal(nearItaly(46.7963, 11.9355), true, 'Bruneck / South Tyrol');
+  assert.equal(nearItaly(41.9028, 12.4964), true, 'Rome');
+  assert.equal(nearItaly(52.52, 13.405), false, 'Berlin');
+  assert.equal(nearItaly(48.137, 11.575), false, 'Munich');
 });

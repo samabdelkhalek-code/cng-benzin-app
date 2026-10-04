@@ -377,6 +377,90 @@ async function fetchGibgasAround(lat, lon, radiusKm) {
   return merged;
 }
 
+// ── Osservaprezzi carburanti (Italien, MIMIT) ────────────────────────────────
+//
+// Neither gibgas nor E-Control covers Italy, so South Tyrol had no price source
+// at all: around Bruneck, OSM knew four CNG stations and only one cleared the
+// two-source rule. The ministry publishes every station and its prices as open
+// data, which closes that gap — "Metano" is the Italian term for CNG.
+//
+// The two CSVs are ~7.5 MB together and are refreshed once a day, so they are
+// parsed into a small index of CNG stations and cached for six hours.
+
+const MIMIT_BASE = 'https://www.mimit.gov.it/images/exportCSV';
+const MIMIT_CACHE_TTL = 6 * 60 * 60 * 1000;
+const mimitCache = new Map();
+
+/** Splits a MIMIT CSV: a header line to skip, then pipe-separated columns. */
+function parseMimitCsv(text) {
+  const lines = String(text).split('\n');
+  const header = lines[1]?.split(';').length > 1 ? ';' : '|';
+  const cols = lines[1]?.split(header).map((c) => c.trim()) ?? [];
+  return lines.slice(2).flatMap((line) => {
+    if (!line.trim()) return [];
+    const parts = line.split(header);
+    if (parts.length < cols.length) return [];
+    const row = {};
+    cols.forEach((c, i) => { row[c] = parts[i]?.trim(); });
+    return [row];
+  });
+}
+
+/** Builds { id -> {lat, lng, price} } for stations selling Metano (= CNG). */
+function buildMimitIndex(anagraficaCsv, prezziCsv) {
+  const prices = new Map();
+  for (const row of parseMimitCsv(prezziCsv)) {
+    if (!/metano/i.test(row.descCarburante ?? '')) continue;
+    const price = parsePrice(row.prezzo);
+    if (price === null) continue;
+    // Several pumps per station: keep the cheapest quoted price
+    const existing = prices.get(row.idImpianto);
+    if (existing == null || price < existing) prices.set(row.idImpianto, price);
+  }
+
+  const stations = [];
+  for (const row of parseMimitCsv(anagraficaCsv)) {
+    const price = prices.get(row.idImpianto);
+    if (price == null) continue;
+    const lat = parseFloat(row.Latitudine);
+    const lng = parseFloat(row.Longitudine);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+    stations.push({ lat, lng, price, status: 'active', source: 'mimit' });
+  }
+  return stations;
+}
+
+async function loadMimitStations() {
+  const hit = cacheGet(mimitCache, 'cng', MIMIT_CACHE_TTL);
+  if (hit && !hit.stale) return hit.data;
+
+  try {
+    const [anagrafica, prezzi] = await Promise.all([
+      axios.get(`${MIMIT_BASE}/anagrafica_impianti_attivi.csv`, { timeout: 25_000, responseType: 'text' }),
+      axios.get(`${MIMIT_BASE}/prezzo_alle_8.csv`, { timeout: 25_000, responseType: 'text' }),
+    ]);
+    const stations = buildMimitIndex(anagrafica.data, prezzi.data);
+    if (!stations.length) throw new Error('no Metano stations parsed');
+    cacheSet(mimitCache, 'cng', stations);
+    console.log(`[prices] MIMIT: indexed ${stations.length} Metano stations`);
+    return stations;
+  } catch (err) {
+    console.error('[prices] MIMIT failed:', err.message);
+    return hit ? hit.data : []; // stale index still beats no coverage
+  }
+}
+
+// Rough bounding box for Italy incl. South Tyrol; skip the download elsewhere.
+function nearItaly(lat, lon) {
+  return Number(lat) >= 35.4 && Number(lat) <= 47.3 && Number(lon) >= 6.5 && Number(lon) <= 18.7;
+}
+
+async function fetchItalyCNG(lat, lon, radiusKm, fuel) {
+  if (normalizeFuel(fuel) !== 'cng' || !nearItaly(lat, lon)) return [];
+  const stations = await loadMimitStations();
+  return stations.filter((s) => haversineKm(Number(lat), Number(lon), s.lat, s.lng) <= radiusKm);
+}
+
 // ── E-Control (Österreich) ────────────────────────────────────────────────────
 function normalizeFuel(fuel) {
   return fuel === 'benzin' ? 'benzin' : 'cng';
@@ -545,7 +629,8 @@ app.get('/prices', async (req, res) => {
     if (!existing) {
       priceMap.set(key, entry);
     } else {
-      const sourceRank = { tankerkoenig: 4, econtrol: 3, gibgas: 2 };
+      // Official registries outrank scraped directories in their own country
+      const sourceRank = { tankerkoenig: 4, econtrol: 3, mimit: 3, gibgas: 2 };
       if (entry.status === 'out_of_order') {
         priceMap.set(key, { ...entry, price: existing.price || entry.price });
       } else if ((sourceRank[entry.source] || 0) > (sourceRank[existing.source] || 0)) {
@@ -565,9 +650,12 @@ app.get('/prices', async (req, res) => {
     normalizedFuel === 'benzin'
       ? fetchTankerkoenig(lat, lon, radius, benzinType)
       : Promise.resolve([]),
+    // Osservaprezzi (MIMIT) — Italy incl. South Tyrol, the only CNG source there
+    fetchItalyCNG(lat, lon, radius, normalizedFuel),
   ];
 
-  const [gibgasResult, econtrolPrices, tankerkoenigPrices] = await Promise.allSettled(tasks);
+  const [gibgasResult, econtrolPrices, tankerkoenigPrices, italyPrices] =
+    await Promise.allSettled(tasks);
 
   if (gibgasResult.status === 'fulfilled') {
     for (const entry of gibgasResult.value) upsert(entry);
@@ -578,6 +666,9 @@ app.get('/prices', async (req, res) => {
   if (tankerkoenigPrices.status === 'fulfilled') {
     for (const entry of tankerkoenigPrices.value) upsert(entry);
   }
+  if (italyPrices.status === 'fulfilled') {
+    for (const entry of italyPrices.value) upsert(entry);
+  }
 
   const result = [...priceMap.values()];
   if (result.length > 0) writePriceCache(lat, lon, radius, normalizedFuel, benzinType, result);
@@ -587,7 +678,7 @@ app.get('/prices', async (req, res) => {
 app.get('/health', (_req, res) =>
   res.json({
     ok: true,
-    sources: ['gibgas', 'econtrol(AT)', 'tankerkoenig'],
+    sources: ['gibgas', 'econtrol(AT)', 'tankerkoenig', 'mimit(IT)'],
     tankerkoenigKey: TANKERKOENIG_API_KEY === TANKERKOENIG_DEMO_KEY ? 'demo' : 'configured',
     benzinPrices: tankerkoenigStatus,
     priceCacheEntries: priceCache.size,
@@ -708,6 +799,9 @@ module.exports = {
   haversineKm,
   sampleCenters,
   priceCacheKey,
+  parseMimitCsv,
+  buildMimitIndex,
+  nearItaly,
   cacheSet,
   cacheGet,
   MAX_CACHE_ENTRIES,
