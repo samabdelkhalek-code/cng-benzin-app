@@ -89,17 +89,21 @@ function cacheGet(map, key, ttlMs) {
 const priceCache = new Map();
 const PRICE_CACHE_TTL = 15 * 60 * 1000;
 
-function priceCacheKey(lat, lon, r, fuel) {
-  return `${fuel}_${Number(lat).toFixed(2)}_${Number(lon).toFixed(2)}_${Math.round(r)}`;
+// benzinType belongs in the key: E5, E10 and diesel are different products at
+// different prices, so leaving it out made the grades collide — whichever was
+// requested first was served to all of them for the next 15 minutes.
+function priceCacheKey(lat, lon, r, fuel, benzinType) {
+  const grade = normalizeFuel(fuel) === 'benzin' ? `_${benzinType ?? 'e5'}` : '';
+  return `${fuel}${grade}_${Number(lat).toFixed(2)}_${Number(lon).toFixed(2)}_${Math.round(r)}`;
 }
 
-function readPriceCache(lat, lon, r, fuel) {
-  const hit = cacheGet(priceCache, priceCacheKey(lat, lon, r, fuel), PRICE_CACHE_TTL);
+function readPriceCache(lat, lon, r, fuel, benzinType) {
+  const hit = cacheGet(priceCache, priceCacheKey(lat, lon, r, fuel, benzinType), PRICE_CACHE_TTL);
   return hit && !hit.stale ? hit.data : null;
 }
 
-function writePriceCache(lat, lon, r, fuel, data) {
-  cacheSet(priceCache, priceCacheKey(lat, lon, r, fuel), data);
+function writePriceCache(lat, lon, r, fuel, benzinType, data) {
+  cacheSet(priceCache, priceCacheKey(lat, lon, r, fuel, benzinType), data);
 }
 
 // ── Station discovery via Overpass (OSM) ─────────────────────────────────────
@@ -434,7 +438,7 @@ app.get('/prices', async (req, res) => {
   const radius = Math.round(Number(r) || 25);
 
   // Serve from in-memory cache when available — avoids repeated slow upstream calls
-  const cached = readPriceCache(lat, lon, radius, normalizedFuel);
+  const cached = readPriceCache(lat, lon, radius, normalizedFuel, benzinType);
   if (cached) { res.json(cached); return; }
 
   console.log(`[prices] ${normalizedFuel} around ${lat},${lon} r=${radius}`);
@@ -484,7 +488,7 @@ app.get('/prices', async (req, res) => {
   }
 
   const result = [...priceMap.values()];
-  if (result.length > 0) writePriceCache(lat, lon, radius, normalizedFuel, result);
+  if (result.length > 0) writePriceCache(lat, lon, radius, normalizedFuel, benzinType, result);
   res.json(result);
 });
 
@@ -611,6 +615,7 @@ module.exports = {
   seedStations,
   haversineKm,
   sampleCenters,
+  priceCacheKey,
   cacheSet,
   cacheGet,
   MAX_CACHE_ENTRIES,

@@ -14,6 +14,7 @@ const {
   seedStations,
   haversineKm,
   sampleCenters,
+  priceCacheKey,
   cacheSet,
   cacheGet,
   MAX_CACHE_ENTRIES,
@@ -202,6 +203,34 @@ test('sampleCenters: wider radii add rings that stay inside the radius', () => {
   assert.ok(
     sampleCenters(48.137, 11.575, 50).length > sampleCenters(48.137, 11.575, 20).length,
     '50 km samples more widely than 20 km'
+  );
+});
+
+// ── Price cache key ──────────────────────────────────────────────────────────
+
+test('priceCacheKey: petrol grades never share an entry', () => {
+  const at = (grade) => priceCacheKey(48.137, 11.575, 10, 'benzin', grade);
+  assert.notEqual(at('e5'), at('e10'));
+  assert.notEqual(at('e5'), at('diesel'));
+  assert.notEqual(at('e10'), at('diesel'));
+  assert.equal(at(undefined), at('e5'), 'an unset grade behaves like the e5 default');
+});
+
+test('priceCacheKey: CNG ignores the grade but still separates place and radius', () => {
+  assert.equal(
+    priceCacheKey(48.137, 11.575, 10, 'cng', 'diesel'),
+    priceCacheKey(48.137, 11.575, 10, 'cng', 'e5'),
+    'grade is meaningless for CNG'
+  );
+  assert.notEqual(
+    priceCacheKey(48.137, 11.575, 10, 'cng'),
+    priceCacheKey(48.137, 11.575, 20, 'cng'),
+    'radius still separates entries'
+  );
+  assert.notEqual(
+    priceCacheKey(48.137, 11.575, 10, 'cng'),
+    priceCacheKey(52.52, 13.405, 10, 'cng'),
+    'location still separates entries'
   );
 });
 
