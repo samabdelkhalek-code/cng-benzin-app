@@ -234,6 +234,98 @@ app.get('/stations', async (req, res) => {
   }
 });
 
+// ── Place search (Nominatim) ─────────────────────────────────────────────────
+//
+// Routed through the proxy rather than called from the browser so that
+// Nominatim's usage policy is actually met: a descriptive User-Agent, at most
+// one request per second, and cached results. Place coordinates barely change,
+// so a long TTL costs nothing.
+
+const geocodeCache = new Map();
+const GEOCODE_CACHE_TTL = 7 * 24 * 60 * 60 * 1000;
+const NOMINATIM_MIN_INTERVAL_MS = 1100;
+// The app's coverage area: DE/AT/CH plus Italy (South Tyrol) and the small
+// neighbours travellers cross into.
+const GEOCODE_COUNTRIES = 'de,at,ch,it,li,lu,nl,be,fr,cz,pl,dk,si';
+
+let nominatimChain = Promise.resolve();
+let lastNominatimCall = 0;
+
+/** Serialises Nominatim calls and spaces them out, as their policy requires. */
+function scheduleNominatim(task) {
+  const run = nominatimChain.then(async () => {
+    const wait = lastNominatimCall + NOMINATIM_MIN_INTERVAL_MS - Date.now();
+    if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+    lastNominatimCall = Date.now();
+    return task();
+  });
+  // Keep the chain alive even when one call rejects
+  nominatimChain = run.then(() => undefined, () => undefined);
+  return run;
+}
+
+/**
+ * Turns a Nominatim hit into a short label plus a disambiguating detail line,
+ * because display_name is a comma-salad far too long for a suggestion row.
+ */
+function toPlace(hit) {
+  const lat = parseFloat(hit.lat);
+  const lng = parseFloat(hit.lon);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+
+  const a = hit.address ?? {};
+  const name =
+    a.city ?? a.town ?? a.village ?? a.hamlet ?? a.municipality ??
+    a.suburb ?? a.county ?? String(hit.display_name ?? '').split(',')[0].trim();
+
+  // County/state give the context that tells two same-named towns apart
+  const detail = [a.county, a.state, a.country].filter(Boolean);
+  const unique = detail.filter((part, i) => part !== name && detail.indexOf(part) === i);
+
+  return {
+    label: name || String(hit.display_name ?? '').split(',')[0].trim(),
+    detail: unique.join(', '),
+    lat,
+    lng,
+  };
+}
+
+app.get('/geocode', async (req, res) => {
+  const q = String(req.query.q ?? '').trim();
+  const limit = Math.min(Math.max(Number(req.query.limit) || 6, 1), 10);
+  if (q.length < 2) return res.json([]);
+
+  const key = `${q.toLowerCase()}_${limit}`;
+  const hit = cacheGet(geocodeCache, key, GEOCODE_CACHE_TTL);
+  if (hit && !hit.stale) return res.json(hit.data);
+
+  try {
+    const { data } = await scheduleNominatim(() =>
+      axios.get('https://nominatim.openstreetmap.org/search', {
+        params: {
+          q,
+          format: 'json',
+          limit,
+          addressdetails: 1,
+          countrycodes: GEOCODE_COUNTRIES,
+          'accept-language': 'de',
+        },
+        timeout: 10_000,
+        headers: { 'User-Agent': 'cng-app/2.0 (CNG station finder; contact via github.com/samabdelkhalek-code)' },
+      })
+    );
+
+    const places = (Array.isArray(data) ? data : []).map(toPlace).filter(Boolean);
+    cacheSet(geocodeCache, key, places);
+    res.json(places);
+  } catch (err) {
+    console.error('[geocode] failed:', err.message);
+    // A stale entry beats an error: place coordinates do not go bad.
+    if (hit) return res.json(hit.data);
+    res.status(502).json({ error: `place search unavailable: ${err.message}` });
+  }
+});
+
 // ── gibgas sampling ──────────────────────────────────────────────────────────
 //
 // gibgas.de ignores the `r` parameter: every call returns the 12 POIs nearest

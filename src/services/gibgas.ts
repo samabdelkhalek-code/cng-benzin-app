@@ -472,3 +472,28 @@ export function useStations(lat: number | null, lng: number | null, radius: numb
     retry: 2,
   });
 }
+
+// ── Place search ──────────────────────────────────────────────────────────────
+
+export interface Place {
+  label: string;
+  detail: string;
+  lat: number;
+  lng: number;
+}
+
+/**
+ * Looks up places through the proxy, which holds the Nominatim rate limit and
+ * cache centrally rather than leaving every client to hammer the service.
+ * Returns [] for queries too short to be meaningful.
+ */
+export async function searchPlaces(query: string, signal?: AbortSignal): Promise<Place[]> {
+  const q = query.trim();
+  if (q.length < 2) return [];
+  const { data } = await axios.get<Place[]>(`${PROXY_BASE}/geocode`, {
+    params: { q, limit: 6 },
+    timeout: 12_000,
+    signal,
+  });
+  return Array.isArray(data) ? data : [];
+}

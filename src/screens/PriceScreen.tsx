@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -13,7 +13,7 @@ import {
   TextInput,
 } from 'react-native';
 import axios from 'axios';
-import { FUEL_META, useStations, Station } from '../services/gibgas';
+import { FUEL_META, useStations, searchPlaces, Station, Place } from '../services/gibgas';
 import { FuelType, useAppStore, Radius } from '../store/useAppStore';
 import { haversineKm, fmtTime } from '../utils/geo';
 import { analyzePriceTrend, PriceTrend } from '../utils/priceHistory';
@@ -47,51 +47,109 @@ function fmtDelta(delta: number): string {
 function SearchBar({ accent }: { accent: string }) {
   const { setSearchLocation, searchLocation } = useAppStore();
   const [query, setQuery] = useState('');
+  const [results, setResults] = useState<Place[]>([]);
   const [loading, setLoading] = useState(false);
+  const [notFound, setNotFound] = useState(false);
+  // Suppresses the lookup that the programmatic setQuery of a pick would trigger
+  const skipNextLookup = useRef(false);
 
-  const handleSearch = async () => {
-    if (!query.trim()) return;
-    setLoading(true);
-    try {
-      const { data } = await axios.get(`https://nominatim.openstreetmap.org/search`, {
-        params: { q: query, format: 'json', limit: 1 },
-      });
-      if (data && data[0]) {
-        setSearchLocation({
-          latitude: parseFloat(data[0].lat),
-          longitude: parseFloat(data[0].lon),
-          label: data[0].display_name,
-        });
-      }
-    } catch (err) {
-      console.error('Search failed:', err);
-    } finally {
-      setLoading(false);
+  // Debounced lookup: typing a town name should surface choices without
+  // firing a request per keystroke.
+  useEffect(() => {
+    if (skipNextLookup.current) {
+      skipNextLookup.current = false;
+      return;
     }
+    const q = query.trim();
+    if (q.length < 2) {
+      setResults([]);
+      setNotFound(false);
+      setLoading(false);
+      return;
+    }
+
+    const controller = new AbortController();
+    setLoading(true);
+    const timer = setTimeout(async () => {
+      try {
+        const places = await searchPlaces(q, controller.signal);
+        setResults(places);
+        setNotFound(places.length === 0);
+      } catch (err) {
+        if (!axios.isCancel(err)) {
+          console.error('Place search failed:', err);
+          setResults([]);
+          setNotFound(true);
+        }
+      } finally {
+        setLoading(false);
+      }
+    }, 350);
+
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [query]);
+
+  const pick = (place: Place) => {
+    skipNextLookup.current = true;
+    setQuery(place.label);
+    setResults([]);
+    setNotFound(false);
+    setSearchLocation({ latitude: place.lat, longitude: place.lng, label: place.label });
+  };
+
+  const reset = () => {
+    skipNextLookup.current = true;
+    setQuery('');
+    setResults([]);
+    setNotFound(false);
+    setSearchLocation(null);
   };
 
   return (
-    <View style={search.wrap}>
-      <TextInput
-        style={search.input}
-        placeholder="Ort suchen (z.B. Wien, München)..."
-        placeholderTextColor="#555"
-        value={query}
-        onChangeText={setQuery}
-        onSubmitEditing={handleSearch}
-        returnKeyType="search"
-      />
-      {loading ? (
-        <ActivityIndicator color={accent} style={search.icon} />
-      ) : (
-        <TouchableOpacity onPress={handleSearch} style={[search.btn, { backgroundColor: accent }]}>
-          <Text style={search.btnText}>Suchen</Text>
-        </TouchableOpacity>
+    <View>
+      <View style={search.wrap}>
+        <TextInput
+          style={search.input}
+          placeholder="Ort suchen (z.B. Bruneck, München)…"
+          placeholderTextColor="#555"
+          value={query}
+          onChangeText={setQuery}
+          onSubmitEditing={() => results[0] && pick(results[0])}
+          returnKeyType="search"
+          autoCorrect={false}
+        />
+        {loading && <ActivityIndicator color={accent} style={search.icon} />}
+        {(query.length > 0 || searchLocation) && (
+          <TouchableOpacity onPress={reset} style={search.clear}>
+            <Text style={search.clearText}>✕</Text>
+          </TouchableOpacity>
+        )}
+      </View>
+
+      {results.length > 0 && (
+        <View style={search.results}>
+          {results.map((place, i) => (
+            <TouchableOpacity
+              key={`${place.lat},${place.lng},${i}`}
+              style={[search.result, i > 0 && search.resultDivider]}
+              onPress={() => pick(place)}
+            >
+              <Text style={search.resultLabel} numberOfLines={1}>📍 {place.label}</Text>
+              {!!place.detail && (
+                <Text style={search.resultDetail} numberOfLines={1}>{place.detail}</Text>
+              )}
+            </TouchableOpacity>
+          ))}
+        </View>
       )}
-      {searchLocation && (
-        <TouchableOpacity onPress={() => { setQuery(''); setSearchLocation(null); }} style={search.clear}>
-          <Text style={search.clearText}>✕</Text>
-        </TouchableOpacity>
+
+      {notFound && !loading && (
+        <View style={search.results}>
+          <Text style={search.noResult}>Kein Ort gefunden für „{query.trim()}".</Text>
+        </View>
       )}
     </View>
   );
@@ -487,11 +545,16 @@ export default function StationList() {
 const search = StyleSheet.create({
   wrap: { flexDirection: 'row', backgroundColor: '#1A1A1A', padding: 10, alignItems: 'center', gap: 8, borderBottomWidth: 1, borderBottomColor: '#2A2A2A' },
   input: { flex: 1, height: 40, backgroundColor: '#2A2A2A', borderRadius: 8, paddingHorizontal: 12, color: '#EEE', fontSize: 14 },
-  btn: { height: 40, paddingHorizontal: 16, borderRadius: 8, justifyContent: 'center' },
-  btnText: { color: '#FFF', fontWeight: '700', fontSize: 13 },
   icon: { width: 40 },
   clear: { padding: 8 },
   clearText: { color: '#666', fontSize: 18, fontWeight: '700' },
+
+  results: { backgroundColor: '#1A1A1A', borderBottomWidth: 1, borderBottomColor: '#2A2A2A' },
+  result: { paddingVertical: 10, paddingHorizontal: 14 },
+  resultDivider: { borderTopWidth: 1, borderTopColor: '#262626' },
+  resultLabel: { color: '#EEE', fontSize: 14, fontWeight: '600' },
+  resultDetail: { color: '#777', fontSize: 12, marginTop: 2 },
+  noResult: { color: '#777', fontSize: 13, paddingVertical: 12, paddingHorizontal: 14 },
 });
 
 const s = StyleSheet.create({
