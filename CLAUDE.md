@@ -35,6 +35,7 @@
 - **Tankerkönig:** needs a real `TANKERKOENIG_API_KEY` on the proxy; the public demo key returns real stations but one placeholder price, which is then withheld. A rejected key falls back to demo (stations only) rather than emptying the tab — `/health` reports the actual state.
 - **Nominatim:** policy allows 1 req/s and wants a descriptive User-Agent plus caching — all handled in `/geocode`; never call it from the client.
 - **OSM fuel tags can be wrong:** stations tagged `fuel:cng=yes` that no price source knows (Aral Schwäbisch Gmünd, Eni Bruneck) are genuinely not CNG. The two-source rule is what filters them out; do not weaken it to raise the hit count.
+- **Petrol grade:** the proxy accepts `benzinType` (e5/e10/diesel) but the UI never sends it, so Benzin always shows E5.
 
 ## Key Files
 - `App.tsx`: Location strategies (GPS/IP).
@@ -43,7 +44,6 @@
 - `src/screens/PriceScreen.tsx`: Main UI & Sorting.
 - `server/index.js`: Proxy — `/stations`, `/prices`, caching.
 - `server/seed.js`: Refreshes the bundled OSM snapshot.
-- **Petrol grade:** the proxy accepts `benzinType` (e5/e10/diesel) but the UI never sends it, so Benzin is always E5.
 
 ## no questions
 - don't ask me always go with yes no aproval needed
