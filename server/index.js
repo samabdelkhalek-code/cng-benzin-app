@@ -234,12 +234,19 @@ app.get('/stations', async (req, res) => {
   }
 });
 
-// ── Place search (Nominatim) ─────────────────────────────────────────────────
+// ── Place search ─────────────────────────────────────────────────────────────
 //
-// Routed through the proxy rather than called from the browser so that
-// Nominatim's usage policy is actually met: a descriptive User-Agent, at most
-// one request per second, and cached results. Place coordinates barely change,
-// so a long TTL costs nothing.
+// Two geocoders, because they are good at different things:
+//
+// Photon (OSM, by Komoot) does prefix matching, which is what a search field
+// needs — "Brunec" finds Bruneck. Nominatim's /search matches whole terms, so
+// a half-typed name finds nothing useful: "Brun" returns hamlets literally
+// called Brun and never Bruneck. Nominatim stays as the fallback because it is
+// the more complete gazetteer once a full name is typed.
+//
+// Both run through the proxy rather than the browser so their usage policies
+// are actually met: descriptive User-Agent, throttling, cached results. Place
+// coordinates barely change, so a long TTL costs nothing.
 
 const geocodeCache = new Map();
 const GEOCODE_CACHE_TTL = 7 * 24 * 60 * 60 * 1000;
@@ -247,6 +254,8 @@ const NOMINATIM_MIN_INTERVAL_MS = 1100;
 // The app's coverage area: DE/AT/CH plus Italy (South Tyrol) and the small
 // neighbours travellers cross into.
 const GEOCODE_COUNTRIES = 'de,at,ch,it,li,lu,nl,be,fr,cz,pl,dk,si';
+// minLon,minLat,maxLon,maxLat — DACH plus Italy down to Sicily
+const PLACE_BBOX = '5.5,35.4,19.5,55.5';
 
 let nominatimChain = Promise.resolve();
 let lastNominatimCall = 0;
@@ -290,6 +299,78 @@ function toPlace(hit) {
   };
 }
 
+// Settlements first: someone searching for a town wants the town, not a street
+// of the same name in another country.
+const PLACE_TYPE_RANK = { city: 0, town: 1, municipality: 1, village: 2, district: 3, locality: 4 };
+
+/** Converts one Photon GeoJSON feature into the compact shape the app uses. */
+function photonToPlace(feature) {
+  const [lng, lat] = feature?.geometry?.coordinates ?? [];
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  const p = feature.properties ?? {};
+  const label = p.name;
+  if (!label) return null;
+
+  const detail = [p.district && p.district !== label ? p.district : null, p.state, p.country]
+    .filter(Boolean)
+    .filter((part, i, arr) => part !== label && arr.indexOf(part) === i);
+
+  return {
+    label,
+    detail: detail.join(', '),
+    lat,
+    lng,
+    _rank: PLACE_TYPE_RANK[p.type] ?? 9,
+  };
+}
+
+async function searchPhoton(q, limit) {
+  const { data } = await axios.get('https://photon.komoot.io/api/', {
+    params: {
+      q,
+      limit: Math.min(limit * 3, 25), // room to drop streets and duplicates
+      lang: 'de',
+      bbox: PLACE_BBOX,
+    },
+    timeout: 9000,
+    headers: { 'User-Agent': 'cng-app/2.0 (CNG station finder)' },
+  });
+
+  const ranked = (data?.features ?? [])
+    .map(photonToPlace)
+    .filter(Boolean)
+    .sort((a, b) => a._rank - b._rank);
+
+  // One town often appears several times — bilingual names, a district of the
+  // same name, the boundary and the centre. Drop later entries that sit on top
+  // of one already kept; the first is the best-ranked of the group.
+  const kept = [];
+  for (const place of ranked) {
+    if (kept.some((k) => haversineKm(k.lat, k.lng, place.lat, place.lng) < 3)) continue;
+    kept.push(place);
+    if (kept.length === limit) break;
+  }
+  return kept.map(({ _rank, ...place }) => place);
+}
+
+async function searchNominatim(q, limit) {
+  const { data } = await scheduleNominatim(() =>
+    axios.get('https://nominatim.openstreetmap.org/search', {
+      params: {
+        q,
+        format: 'json',
+        limit,
+        addressdetails: 1,
+        countrycodes: GEOCODE_COUNTRIES,
+        'accept-language': 'de',
+      },
+      timeout: 10_000,
+      headers: { 'User-Agent': 'cng-app/2.0 (CNG station finder; contact via github.com/samabdelkhalek-code)' },
+    })
+  );
+  return (Array.isArray(data) ? data : []).map(toPlace).filter(Boolean);
+}
+
 app.get('/geocode', async (req, res) => {
   const q = String(req.query.q ?? '').trim();
   const limit = Math.min(Math.max(Number(req.query.limit) || 6, 1), 10);
@@ -299,31 +380,26 @@ app.get('/geocode', async (req, res) => {
   const hit = cacheGet(geocodeCache, key, GEOCODE_CACHE_TTL);
   if (hit && !hit.stale) return res.json(hit.data);
 
+  let places = [];
   try {
-    const { data } = await scheduleNominatim(() =>
-      axios.get('https://nominatim.openstreetmap.org/search', {
-        params: {
-          q,
-          format: 'json',
-          limit,
-          addressdetails: 1,
-          countrycodes: GEOCODE_COUNTRIES,
-          'accept-language': 'de',
-        },
-        timeout: 10_000,
-        headers: { 'User-Agent': 'cng-app/2.0 (CNG station finder; contact via github.com/samabdelkhalek-code)' },
-      })
-    );
-
-    const places = (Array.isArray(data) ? data : []).map(toPlace).filter(Boolean);
-    cacheSet(geocodeCache, key, places);
-    res.json(places);
+    places = await searchPhoton(q, limit);
   } catch (err) {
-    console.error('[geocode] failed:', err.message);
-    // A stale entry beats an error: place coordinates do not go bad.
-    if (hit) return res.json(hit.data);
-    res.status(502).json({ error: `place search unavailable: ${err.message}` });
+    console.error('[geocode] Photon failed:', err.message);
   }
+
+  if (places.length === 0) {
+    try {
+      places = await searchNominatim(q, limit);
+    } catch (err) {
+      console.error('[geocode] Nominatim failed:', err.message);
+      // A stale entry beats an error: place coordinates do not go bad.
+      if (hit) return res.json(hit.data);
+      return res.status(502).json({ error: `place search unavailable: ${err.message}` });
+    }
+  }
+
+  cacheSet(geocodeCache, key, places);
+  res.json(places);
 });
 
 // ── gibgas sampling ──────────────────────────────────────────────────────────
