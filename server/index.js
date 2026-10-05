@@ -203,6 +203,29 @@ async function queryOverpass(lat, lon, radiusKm, fuel) {
   throw lastErr ?? new Error('all Overpass mirrors failed');
 }
 
+// One refresh per cache key at a time: without this, every request arriving
+// during a 26 s Overpass sweep would start its own.
+const stationRefreshes = new Map();
+
+function refreshStations(key, lat, lon, radius, fuel) {
+  const running = stationRefreshes.get(key);
+  if (running) return running;
+
+  const task = queryOverpass(lat, lon, radius, fuel)
+    .then((stations) => {
+      cacheSet(stationCache, key, stations);
+      return stations;
+    })
+    .catch((err) => {
+      console.error(`[stations] refresh failed for ${key}: ${err.message}`);
+      return null;
+    })
+    .finally(() => stationRefreshes.delete(key));
+
+  stationRefreshes.set(key, task);
+  return task;
+}
+
 app.get('/stations', async (req, res) => {
   const { lat, lon, r = 25, fuel } = req.query;
   if (!lat || !lon) return res.status(400).json({ error: 'lat and lon required' });
@@ -214,24 +237,21 @@ app.get('/stations', async (req, res) => {
   const hit = cacheGet(stationCache, key, STATION_CACHE_TTL);
   if (hit && !hit.stale) return res.json(hit.data);
 
-  try {
-    const stations = await queryOverpass(lat, lon, radius, normalizedFuel);
-    cacheSet(stationCache, key, stations);
-    res.json(stations);
-  } catch (err) {
-    // Overpass is unreachable: prefer a stale cache entry, then the bundled
-    // snapshot. Both are real OSM data, just not fetched a moment ago.
-    if (hit) {
-      console.warn(`[stations] Overpass down, serving stale cache for ${key}`);
-      return res.json(hit.data);
-    }
-    const seeded = seedStations(lat, lon, radius, normalizedFuel);
-    if (seeded.length) {
-      console.warn(`[stations] Overpass down, serving ${seeded.length} seeded stations for ${key}`);
-      return res.json(seeded);
-    }
-    res.status(503).json({ error: `station discovery unavailable: ${err.message}` });
+  // Stale-while-revalidate. While Overpass is unhealthy every cold key burned
+  // the full mirror budget before falling back, and clients hit their own
+  // timeout first and showed an empty list. A stale entry or the bundled
+  // snapshot is real OSM data that is at most weeks old, so it is served
+  // immediately and the refresh runs behind the response.
+  const fallback = hit?.data?.length ? hit.data : seedStations(lat, lon, radius, normalizedFuel);
+  if (fallback.length) {
+    refreshStations(key, lat, lon, radius, normalizedFuel);
+    return res.json(fallback);
   }
+
+  // Nothing to fall back on — this one has to wait for Overpass.
+  const stations = await refreshStations(key, lat, lon, radius, normalizedFuel);
+  if (stations) return res.json(stations);
+  res.status(503).json({ error: 'station discovery unavailable' });
 });
 
 // ── Place search ─────────────────────────────────────────────────────────────
