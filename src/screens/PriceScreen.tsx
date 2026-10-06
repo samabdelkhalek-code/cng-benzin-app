@@ -14,7 +14,7 @@ import {
 } from 'react-native';
 import axios from 'axios';
 import { FUEL_META, useStations, searchPlaces, Station, Place } from '../services/gibgas';
-import { FuelType, useAppStore, Radius } from '../store/useAppStore';
+import { BenzinType, FuelType, useAppStore, Radius } from '../store/useAppStore';
 import { haversineKm, fmtTime } from '../utils/geo';
 import { analyzePriceTrend, PriceTrend } from '../utils/priceHistory';
 import { isOpenNow, fmtOpeningHours } from '../utils/openingHours';
@@ -23,6 +23,11 @@ import { isOpenNow, fmtOpeningHours } from '../utils/openingHours';
 
 const RADIUS_OPTIONS: Radius[] = [10, 20, 50];
 const FUEL_OPTIONS: FuelType[] = ['cng', 'benzin'];
+const BENZIN_OPTIONS: { key: BenzinType; label: string }[] = [
+  { key: 'e5', label: 'Super E5' },
+  { key: 'e10', label: 'E10' },
+  { key: 'diesel', label: 'Diesel' },
+];
 type Sort = 'distance' | 'price';
 
 function navigate(lat: number, lng: number) {
@@ -50,17 +55,25 @@ function SearchBar({ accent }: { accent: string }) {
   const [results, setResults] = useState<Place[]>([]);
   const [loading, setLoading] = useState(false);
   const [notFound, setNotFound] = useState(false);
-  // Suppresses the lookup that the programmatic setQuery of a pick would trigger
-  const skipNextLookup = useRef(false);
+  // The text a pick or reset wrote into the field. Comparing against it is
+  // idempotent, unlike a one-shot flag: that flag stayed armed whenever
+  // setQuery was a no-op (picking a place already spelled out in full) and
+  // then swallowed the next keystroke's lookup.
+  const settledQuery = useRef<string | null>(null);
+
+  const lookup = useCallback(async (q: string, signal?: AbortSignal) => {
+    const places = await searchPlaces(q, signal);
+    setResults(places);
+    setNotFound(places.length === 0);
+    return places;
+  }, []);
 
   // Debounced lookup: typing a town name should surface choices without
   // firing a request per keystroke.
   useEffect(() => {
-    if (skipNextLookup.current) {
-      skipNextLookup.current = false;
-      return;
-    }
     const q = query.trim();
+    if (settledQuery.current === query) return;
+
     if (q.length < 2) {
       setResults([]);
       setNotFound(false);
@@ -69,12 +82,12 @@ function SearchBar({ accent }: { accent: string }) {
     }
 
     const controller = new AbortController();
+    let current = true;
     setLoading(true);
+
     const timer = setTimeout(async () => {
       try {
-        const places = await searchPlaces(q, controller.signal);
-        setResults(places);
-        setNotFound(places.length === 0);
+        await lookup(q, controller.signal);
       } catch (err) {
         if (!axios.isCancel(err)) {
           console.error('Place search failed:', err);
@@ -82,26 +95,45 @@ function SearchBar({ accent }: { accent: string }) {
           setNotFound(true);
         }
       } finally {
-        setLoading(false);
+        // A superseded run must not clear the spinner the newer one just lit
+        if (current) setLoading(false);
       }
     }, 350);
 
     return () => {
+      current = false;
       clearTimeout(timer);
       controller.abort();
     };
-  }, [query]);
+  }, [query, lookup]);
 
   const pick = (place: Place) => {
-    skipNextLookup.current = true;
+    settledQuery.current = place.label;
     setQuery(place.label);
     setResults([]);
     setNotFound(false);
     setSearchLocation({ latitude: place.lat, longitude: place.lng, label: place.label });
   };
 
+  // Enter should act even inside the debounce window, where no results exist yet
+  const submit = async () => {
+    if (results[0]) return pick(results[0]);
+    const q = query.trim();
+    if (q.length < 2) return;
+    setLoading(true);
+    try {
+      const places = await lookup(q);
+      if (places[0]) pick(places[0]);
+    } catch (err) {
+      console.error('Place search failed:', err);
+      setNotFound(true);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const reset = () => {
-    skipNextLookup.current = true;
+    settledQuery.current = '';
     setQuery('');
     setResults([]);
     setNotFound(false);
@@ -117,7 +149,7 @@ function SearchBar({ accent }: { accent: string }) {
           placeholderTextColor="#555"
           value={query}
           onChangeText={setQuery}
-          onSubmitEditing={() => results[0] && pick(results[0])}
+          onSubmitEditing={submit}
           returnKeyType="search"
           autoCorrect={false}
         />
@@ -347,8 +379,10 @@ export default function StationList() {
     searchLocation,
     selectedRadius,
     selectedFuel,
+    selectedBenzinType,
     setSelectedRadius,
     setSelectedFuel,
+    setSelectedBenzinType,
     filterOpen,
     setFilterOpen,
   } = useAppStore();
@@ -362,7 +396,8 @@ export default function StationList() {
     activeLocation?.latitude ?? null,
     activeLocation?.longitude ?? null,
     selectedRadius,
-    selectedFuel
+    selectedFuel,
+    selectedBenzinType
   );
 
   const rows = useMemo((): Row[] => {
@@ -458,6 +493,22 @@ export default function StationList() {
 
       {!isLoading && verifiedRows.length > 0 && (
         <BestBanner rows={verifiedRows} unit={fuelMeta.unit} accent={accent} />
+      )}
+
+      {/* Petrol comes in three grades at different prices; CNG has no split */}
+      {selectedFuel === 'benzin' && (
+        <View style={s.bar}>
+          <Text style={s.barLabel}>Sorte</Text>
+          {BENZIN_OPTIONS.map(({ key, label }) => (
+            <TouchableOpacity
+              key={key}
+              style={[s.chip, selectedBenzinType === key && { backgroundColor: accent }]}
+              onPress={() => setSelectedBenzinType(key)}
+            >
+              <Text style={[s.chipTxt, selectedBenzinType === key && s.chipTxtOn]}>{label}</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
       )}
 
       <View style={s.bar}>

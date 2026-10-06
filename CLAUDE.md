@@ -29,14 +29,14 @@
 - The Expo build fails on Render's free tier, so **`dist/` is built locally and committed**. Frontend change → `npm run build:web` → commit `dist/` in the same commit, otherwise the old bundle stays live.
 
 ## Technical Debt / Known Issues
-- **Overpass:** frequently 504s. `/stations` caches 24 h and answers from cache or `server/osm-seed.json` **first**, refreshing behind the response — never make a request wait on Overpass, a cold key costs 26 s and clients time out into an empty list.
+- **Overpass:** frequently 504s. `/stations` caches 24 h, gives a refresh `OVERPASS_GRACE_MS` (4 s) to answer with live data, then falls back to the cache or `server/osm-seed.json` while the refresh finishes behind the response. Never await the full sweep: a cold key costs 26 s and clients time out into an empty list.
 - **Osservaprezzi (IT):** the two CSVs are ~7.5 MB and took 93 s to fetch, so they are never awaited either; `server/it-cng-seed.json` covers cold starts and the index refreshes in the background. Both snapshots are refreshed by `npm run seed` in `server/`.
 - **gibgas:** ignores the `r` parameter and always returns the 12 nearest POIs — `sampleCenters` queries a ring of offset centres so wider radii are covered.
 - **clever-tanken:** dead (404 everywhere), removed from `/prices`.
 - **Tankerkönig:** needs a real `TANKERKOENIG_API_KEY` on the proxy; the public demo key returns real stations but one placeholder price, which is then withheld. A rejected key falls back to demo (stations only) rather than emptying the tab — `/health` reports the actual state.
 - **Nominatim:** policy allows 1 req/s and wants a descriptive User-Agent plus caching — all handled in `/geocode`; never call it from the client.
 - **OSM fuel tags can be wrong:** stations tagged `fuel:cng=yes` that no price source knows (Aral Schwäbisch Gmünd, Eni Bruneck) are genuinely not CNG. The two-source rule is what filters them out; do not weaken it to raise the hit count.
-- **Petrol grade:** the proxy accepts `benzinType` (e5/e10/diesel) but the UI never sends it, so Benzin always shows E5.
+- **Rate limit:** `RATE_LIMIT_MAX` (default 120/min per client IP) guards the unauthenticated proxy; the Nominatim queue is capped at `NOMINATIM_MAX_QUEUE` and rejects the tail rather than parking it.
 
 ## Key Files
 - `App.tsx`: Location strategies (GPS/IP).

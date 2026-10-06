@@ -23,6 +23,45 @@ app.use((req, res, next) => {
   next();
 });
 
+// ── Rate limit ───────────────────────────────────────────────────────────────
+//
+// The proxy is unauthenticated and fans out to third parties who each impose
+// their own limits — Nominatim allows one request a second, and a single
+// visitor typing in the search field can outpace that on their own. A fixed
+// window per client keeps one caller from spending everyone's budget.
+
+const RATE_LIMIT_WINDOW_MS = 60_000;
+const RATE_LIMIT_MAX = Number(process.env.RATE_LIMIT_MAX) || 120;
+const rateBuckets = new Map();
+
+function clientKey(req) {
+  const forwarded = String(req.headers['x-forwarded-for'] ?? '').split(',')[0].trim();
+  return forwarded || req.socket?.remoteAddress || 'unknown';
+}
+
+function rateLimit(req, res, next) {
+  const now = Date.now();
+  const key = clientKey(req);
+  const bucket = rateBuckets.get(key);
+
+  if (!bucket || now >= bucket.resetAt) {
+    rateBuckets.set(key, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
+  } else if (bucket.count >= RATE_LIMIT_MAX) {
+    res.setHeader('Retry-After', Math.ceil((bucket.resetAt - now) / 1000));
+    return res.status(429).json({ error: 'too many requests' });
+  } else {
+    bucket.count++;
+  }
+
+  // Sweep expired buckets so the map cannot grow without bound
+  if (rateBuckets.size > 5000) {
+    for (const [k, b] of rateBuckets) if (now >= b.resetAt) rateBuckets.delete(k);
+  }
+  next();
+}
+
+app.use(rateLimit);
+
 function haversineKm(lat1, lon1, lat2, lon2) {
   const R = 6371;
   const toRad = (d) => (d * Math.PI) / 180;
@@ -126,6 +165,8 @@ const stationCache = new Map();
 const STATION_CACHE_TTL = 24 * 60 * 60 * 1000;
 const OVERPASS_MIRROR_TIMEOUT_MS = 12_000;
 const OVERPASS_TOTAL_BUDGET_MS = 26_000;
+// How long a request waits for live data before answering from the snapshot
+const OVERPASS_GRACE_MS = 4_000;
 
 // Last-resort dataset: a snapshot of OSM fuel:cng stations for DE/AT/CH,
 // refreshed by `npm run seed`. It guarantees the app returns stations even on
@@ -237,20 +278,27 @@ app.get('/stations', async (req, res) => {
   const hit = cacheGet(stationCache, key, STATION_CACHE_TTL);
   if (hit && !hit.stale) return res.json(hit.data);
 
-  // Stale-while-revalidate. While Overpass is unhealthy every cold key burned
-  // the full mirror budget before falling back, and clients hit their own
-  // timeout first and showed an empty list. A stale entry or the bundled
-  // snapshot is real OSM data that is at most weeks old, so it is served
-  // immediately and the refresh runs behind the response.
+  const refresh = refreshStations(key, lat, lon, radius, normalizedFuel);
   const fallback = hit?.data?.length ? hit.data : seedStations(lat, lon, radius, normalizedFuel);
+
+  // Give Overpass a short head start before falling back. A healthy mirror
+  // answers in 2-3 s, so this normally returns live data; when every mirror is
+  // down the sweep costs 26 s, which no client waits for, and answering from
+  // the snapshot beats the empty list they used to get. Returning the snapshot
+  // immediately in all cases was wrong the other way: clients cache for 20 min,
+  // so a healthy Overpass never reached that session.
+  const stations = await Promise.race([
+    refresh,
+    fallback.length
+      ? new Promise((resolve) => setTimeout(() => resolve(null), OVERPASS_GRACE_MS))
+      : refresh,
+  ]);
+
+  if (stations) return res.json(stations);
   if (fallback.length) {
-    refreshStations(key, lat, lon, radius, normalizedFuel);
+    console.warn(`[stations] serving ${fallback.length} fallback stations for ${key}`);
     return res.json(fallback);
   }
-
-  // Nothing to fall back on — this one has to wait for Overpass.
-  const stations = await refreshStations(key, lat, lon, radius, normalizedFuel);
-  if (stations) return res.json(stations);
   res.status(503).json({ error: 'station discovery unavailable' });
 });
 
@@ -270,7 +318,14 @@ app.get('/stations', async (req, res) => {
 
 const geocodeCache = new Map();
 const GEOCODE_CACHE_TTL = 7 * 24 * 60 * 60 * 1000;
+// "No such place" is far less durable than a hit: it is equally the signature
+// of an upstream outage, and a week-long entry would keep that prefix dead long
+// after the service recovered.
+const GEOCODE_EMPTY_TTL = 5 * 60 * 1000;
 const NOMINATIM_MIN_INTERVAL_MS = 1100;
+// At 1.1 s apiece a deep queue would hold responses open for minutes, so the
+// tail is rejected rather than silently parked.
+const NOMINATIM_MAX_QUEUE = 12;
 // The app's coverage area: DE/AT/CH plus Italy (South Tyrol) and the small
 // neighbours travellers cross into.
 const GEOCODE_COUNTRIES = 'de,at,ch,it,li,lu,nl,be,fr,cz,pl,dk,si';
@@ -279,9 +334,15 @@ const PLACE_BBOX = '5.5,35.4,19.5,55.5';
 
 let nominatimChain = Promise.resolve();
 let lastNominatimCall = 0;
+let nominatimQueued = 0;
 
 /** Serialises Nominatim calls and spaces them out, as their policy requires. */
 function scheduleNominatim(task) {
+  if (nominatimQueued >= NOMINATIM_MAX_QUEUE) {
+    return Promise.reject(new Error('geocoder busy'));
+  }
+  nominatimQueued++;
+
   const run = nominatimChain.then(async () => {
     const wait = lastNominatimCall + NOMINATIM_MIN_INTERVAL_MS - Date.now();
     if (wait > 0) await new Promise((r) => setTimeout(r, wait));
@@ -289,7 +350,7 @@ function scheduleNominatim(task) {
     return task();
   });
   // Keep the chain alive even when one call rejects
-  nominatimChain = run.then(() => undefined, () => undefined);
+  nominatimChain = run.then(() => undefined, () => undefined).finally(() => { nominatimQueued--; });
   return run;
 }
 
@@ -344,6 +405,27 @@ function photonToPlace(feature) {
   };
 }
 
+/**
+ * Ranks settlements above streets and drops near-duplicates. One town often
+ * surfaces several times — its bilingual name, a district of the same name,
+ * the boundary and the centre — so later entries sitting on top of one already
+ * kept are discarded; the first of each group is the best-ranked.
+ */
+function rankPlaces(features, limit) {
+  const ranked = (features ?? [])
+    .map(photonToPlace)
+    .filter(Boolean)
+    .sort((a, b) => a._rank - b._rank);
+
+  const kept = [];
+  for (const place of ranked) {
+    if (kept.some((k) => haversineKm(k.lat, k.lng, place.lat, place.lng) < 3)) continue;
+    kept.push(place);
+    if (kept.length === limit) break;
+  }
+  return kept.map(({ _rank, ...place }) => place);
+}
+
 async function searchPhoton(q, limit) {
   const { data } = await axios.get('https://photon.komoot.io/api/', {
     params: {
@@ -355,22 +437,7 @@ async function searchPhoton(q, limit) {
     timeout: 9000,
     headers: { 'User-Agent': 'cng-app/2.0 (CNG station finder)' },
   });
-
-  const ranked = (data?.features ?? [])
-    .map(photonToPlace)
-    .filter(Boolean)
-    .sort((a, b) => a._rank - b._rank);
-
-  // One town often appears several times — bilingual names, a district of the
-  // same name, the boundary and the centre. Drop later entries that sit on top
-  // of one already kept; the first is the best-ranked of the group.
-  const kept = [];
-  for (const place of ranked) {
-    if (kept.some((k) => haversineKm(k.lat, k.lng, place.lat, place.lng) < 3)) continue;
-    kept.push(place);
-    if (kept.length === limit) break;
-  }
-  return kept.map(({ _rank, ...place }) => place);
+  return rankPlaces(data?.features, limit);
 }
 
 async function searchNominatim(q, limit) {
@@ -397,25 +464,35 @@ app.get('/geocode', async (req, res) => {
   if (q.length < 2) return res.json([]);
 
   const key = `${q.toLowerCase()}_${limit}`;
+  // An empty entry expires quickly so an outage cannot block a prefix for a week
   const hit = cacheGet(geocodeCache, key, GEOCODE_CACHE_TTL);
-  if (hit && !hit.stale) return res.json(hit.data);
+  const emptyHit = cacheGet(geocodeCache, key, GEOCODE_EMPTY_TTL);
+  if (hit && !hit.stale && (hit.data.length > 0 || !emptyHit.stale)) return res.json(hit.data);
 
   let places = [];
+  let photonFailed = false;
   try {
     places = await searchPhoton(q, limit);
   } catch (err) {
+    photonFailed = true;
     console.error('[geocode] Photon failed:', err.message);
   }
 
+  let nominatimFailed = false;
   if (places.length === 0) {
     try {
       places = await searchNominatim(q, limit);
     } catch (err) {
+      nominatimFailed = true;
       console.error('[geocode] Nominatim failed:', err.message);
-      // A stale entry beats an error: place coordinates do not go bad.
-      if (hit) return res.json(hit.data);
-      return res.status(502).json({ error: `place search unavailable: ${err.message}` });
     }
+  }
+
+  if (places.length === 0 && photonFailed && nominatimFailed) {
+    // Both upstreams are down — this says nothing about the query, so neither
+    // cache it nor present it as "no such place".
+    if (hit) return res.json(hit.data);
+    return res.status(502).json({ error: 'place search unavailable' });
   }
 
   cacheSet(geocodeCache, key, places);
@@ -502,7 +579,13 @@ function parseMimitCsv(text) {
   });
 }
 
-/** Builds { id -> {lat, lng, price} } for stations selling Metano (= CNG). */
+/** MIMIT reports "01/10/2026 20:00:06"; the app shows dates as DD.MM.YYYY. */
+function mimitPriceDate(dtComu) {
+  const m = String(dtComu ?? '').match(/^(\d{2})\/(\d{2})\/(\d{4})/);
+  return m ? `${m[1]}.${m[2]}.${m[3]}` : null;
+}
+
+/** Builds the list of stations selling Metano (= CNG) with price and date. */
 function buildMimitIndex(anagraficaCsv, prezziCsv) {
   const prices = new Map();
   for (const row of parseMimitCsv(prezziCsv)) {
@@ -511,17 +594,26 @@ function buildMimitIndex(anagraficaCsv, prezziCsv) {
     if (price === null) continue;
     // Several pumps per station: keep the cheapest quoted price
     const existing = prices.get(row.idImpianto);
-    if (existing == null || price < existing) prices.set(row.idImpianto, price);
+    if (existing == null || price < existing.price) {
+      prices.set(row.idImpianto, { price, priceDate: mimitPriceDate(row.dtComu) });
+    }
   }
 
   const stations = [];
   for (const row of parseMimitCsv(anagraficaCsv)) {
-    const price = prices.get(row.idImpianto);
-    if (price == null) continue;
+    const quote = prices.get(row.idImpianto);
+    if (quote == null) continue;
     const lat = parseFloat(row.Latitudine);
     const lng = parseFloat(row.Longitudine);
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
-    stations.push({ lat, lng, price, status: 'active', source: 'mimit' });
+    stations.push({
+      lat,
+      lng,
+      price: quote.price,
+      priceDate: quote.priceDate,
+      status: 'active',
+      source: 'mimit',
+    });
   }
   return stations;
 }
@@ -549,13 +641,24 @@ async function downloadMimitIndex() {
 }
 
 let mimitRefresh = null;
+let mimitRetryAfter = 0;
+// Each attempt pulls ~7.5 MB; without a pause a broken upstream would make
+// every Italian request start the download again.
+const MIMIT_RETRY_BACKOFF_MS = 10 * 60 * 1000;
 
-/** Starts a refresh unless one is already running; never awaited by a request. */
+/** Starts a refresh unless one is running or a recent one failed. */
 function ensureMimitIndex() {
   if (mimitRefresh) return mimitRefresh;
+  if (Date.now() < mimitRetryAfter) return null;
+
   mimitRefresh = downloadMimitIndex()
+    .then((stations) => {
+      mimitRetryAfter = 0;
+      return stations;
+    })
     .catch((err) => {
-      console.error('[prices] MIMIT refresh failed:', err.message);
+      mimitRetryAfter = Date.now() + MIMIT_RETRY_BACKOFF_MS;
+      console.error(`[prices] MIMIT refresh failed, pausing ${MIMIT_RETRY_BACKOFF_MS / 60000} min:`, err.message);
       return null;
     })
     .finally(() => { mimitRefresh = null; });
@@ -931,7 +1034,13 @@ module.exports = {
   priceCacheKey,
   parseMimitCsv,
   buildMimitIndex,
+  mimitPriceDate,
   nearItaly,
+  photonToPlace,
+  toPlace,
+  rankPlaces,
+  clientKey,
+  RATE_LIMIT_MAX,
   cacheSet,
   cacheGet,
   MAX_CACHE_ENTRIES,

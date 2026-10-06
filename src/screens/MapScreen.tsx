@@ -6,7 +6,7 @@ import StationMap from '../components/StationMap';
 import { haversineKm } from '../utils/geo';
 
 export default function MapScreen() {
-  const { userLocation, searchLocation, selectedRadius, selectedFuel } = useAppStore();
+  const { userLocation, searchLocation, selectedRadius, selectedFuel, selectedBenzinType } = useAppStore();
   const activeLocation = searchLocation
     ? { latitude: searchLocation.latitude, longitude: searchLocation.longitude }
     : userLocation;
@@ -15,7 +15,8 @@ export default function MapScreen() {
     activeLocation?.latitude ?? null,
     activeLocation?.longitude ?? null,
     selectedRadius,
-    selectedFuel
+    selectedFuel,
+    selectedBenzinType
   );
 
   const filteredStations = useMemo(() => {

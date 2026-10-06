@@ -17,7 +17,14 @@ const {
   priceCacheKey,
   parseMimitCsv,
   buildMimitIndex,
+  mimitPriceDate,
   nearItaly,
+  photonToPlace,
+  toPlace,
+  rankPlaces,
+  clientKey,
+  RATE_LIMIT_MAX,
+  app,
   cacheSet,
   cacheGet,
   MAX_CACHE_ENTRIES,
@@ -329,4 +336,207 @@ test('nearItaly: gates the download to the Italian bounding box', () => {
   assert.equal(nearItaly(41.9028, 12.4964), true, 'Rome');
   assert.equal(nearItaly(52.52, 13.405), false, 'Berlin');
   assert.equal(nearItaly(48.137, 11.575), false, 'Munich');
+});
+
+// ── Place search ─────────────────────────────────────────────────────────────
+
+const photonFeature = (name, type, lon, lat, extra = {}) => ({
+  geometry: { coordinates: [lon, lat] },
+  properties: { name, type, country: 'Italien', state: 'Trentino-Südtirol', ...extra },
+});
+
+test('photonToPlace: builds a short label and a disambiguating detail', () => {
+  const p = photonToPlace(photonFeature('Bruneck', 'city', 11.9355, 46.7963));
+  assert.equal(p.label, 'Bruneck');
+  assert.equal(p.detail, 'Trentino-Südtirol, Italien');
+  assert.equal(p.lat, 46.7963);
+  assert.equal(p.lng, 11.9355);
+});
+
+test('photonToPlace: drops features without a name or usable coordinates', () => {
+  assert.equal(photonToPlace({ geometry: { coordinates: [11, 46] }, properties: {} }), null);
+  assert.equal(photonToPlace({ geometry: { coordinates: [] }, properties: { name: 'X' } }), null);
+  assert.equal(photonToPlace({}), null);
+});
+
+test('photonToPlace: never repeats the place name inside its own detail line', () => {
+  const p = photonToPlace(
+    photonFeature('Bozen', 'city', 11.3548, 46.4983, { district: 'Bozen', state: 'Bozen' })
+  );
+  assert.equal(p.label, 'Bozen');
+  assert.ok(!p.detail.split(', ').includes('Bozen'));
+});
+
+test('rankPlaces: settlements outrank streets', () => {
+  const out = rankPlaces(
+    [
+      photonFeature('Brunecker Straße', 'street', 11.5, 48.1),
+      photonFeature('Bruneck', 'city', 11.9355, 46.7963),
+    ],
+    5
+  );
+  assert.equal(out[0].label, 'Bruneck', 'the city comes first despite being listed second');
+  assert.equal(out.length, 2);
+});
+
+test('rankPlaces: collapses the same town appearing under several names', () => {
+  // Bilingual name, district and boundary all sit within a few hundred metres
+  const out = rankPlaces(
+    [
+      photonFeature('Bruneck', 'city', 11.9355, 46.7963),
+      photonFeature('Bruneck - Brunico', 'city', 11.9356, 46.7964),
+      photonFeature('Bruneck', 'district', 11.9359, 46.7961),
+      photonFeature('Brixen', 'city', 11.6578, 46.7164),
+    ],
+    5
+  );
+  assert.equal(out.length, 2, 'the three Bruneck rows collapse into one');
+  assert.deepEqual(out.map((p) => p.label), ['Bruneck', 'Brixen']);
+});
+
+test('rankPlaces: honours the limit and tolerates empty input', () => {
+  const many = Array.from({ length: 9 }, (_, i) =>
+    photonFeature(`Ort ${i}`, 'city', 11 + i * 0.5, 46 + i * 0.5)
+  );
+  assert.equal(rankPlaces(many, 3).length, 3);
+  assert.deepEqual(rankPlaces([], 5), []);
+  assert.deepEqual(rankPlaces(undefined, 5), []);
+});
+
+test('toPlace: maps a Nominatim hit and drops unusable coordinates', () => {
+  const p = toPlace({
+    lat: '46.7963',
+    lon: '11.9355',
+    display_name: 'Bruneck, Pustertal, Bozen, Italien',
+    address: { town: 'Bruneck', county: 'Bozen', state: 'Südtirol', country: 'Italien' },
+  });
+  assert.equal(p.label, 'Bruneck');
+  assert.equal(p.detail, 'Bozen, Südtirol, Italien');
+  assert.equal(toPlace({ lat: 'x', lon: 'y', display_name: 'Nirgendwo' }), null);
+});
+
+test('toPlace: falls back to the first segment of display_name', () => {
+  const p = toPlace({ lat: '48.1', lon: '11.5', display_name: 'Irgendwo, Bayern', address: {} });
+  assert.equal(p.label, 'Irgendwo');
+});
+
+// ── MIMIT price dates ────────────────────────────────────────────────────────
+
+test('mimitPriceDate: converts the Italian timestamp, rejecting junk', () => {
+  assert.equal(mimitPriceDate('01/10/2026 20:00:06'), '01.10.2026');
+  assert.equal(mimitPriceDate(''), null);
+  assert.equal(mimitPriceDate(undefined), null);
+  assert.equal(mimitPriceDate('2026-10-01'), null);
+});
+
+test('buildMimitIndex: carries the price date through, cheapest pump winning', () => {
+  const anagrafica = [
+    'Estrazione',
+    'idImpianto|Gestore|Bandiera|Tipo Impianto|Nome Impianto|Indirizzo|Comune|Provincia|Latitudine|Longitudine',
+    '1|G|Eni|Stradale|VANDOIES|Via X|VANDOIES|BZ|46.8141|11.7219',
+  ].join('\n');
+  const prezzi = [
+    'Estrazione',
+    'idImpianto|descCarburante|prezzo|isSelf|dtComu',
+    '1|Metano|1.999|0|01/10/2026 20:00:06',
+    '1|Metano|1.899|1|02/10/2026 06:30:00',
+  ].join('\n');
+
+  const [station] = buildMimitIndex(anagrafica, prezzi);
+  assert.equal(station.price, 1.899, 'the cheaper pump wins');
+  assert.equal(station.priceDate, '02.10.2026', 'and its date travels with it');
+});
+
+// ── Rate limiting ────────────────────────────────────────────────────────────
+
+test('clientKey: prefers the first forwarded address over the socket', () => {
+  assert.equal(
+    clientKey({ headers: { 'x-forwarded-for': '203.0.113.5, 10.0.0.1' }, socket: { remoteAddress: '10.0.0.1' } }),
+    '203.0.113.5'
+  );
+  assert.equal(clientKey({ headers: {}, socket: { remoteAddress: '10.0.0.1' } }), '10.0.0.1');
+  assert.equal(clientKey({ headers: {}, socket: {} }), 'unknown');
+});
+
+// ── Routes ───────────────────────────────────────────────────────────────────
+// Exercised over a real socket, but only on paths that need no upstream call,
+// so the suite stays offline-safe and deterministic.
+
+const http = require('node:http');
+
+function listen() {
+  return new Promise((resolve) => {
+    const server = app.listen(0, () => resolve(server));
+  });
+}
+
+function request(server, path, headers = {}) {
+  const { port } = server.address();
+  return new Promise((resolve, reject) => {
+    http
+      .get({ host: '127.0.0.1', port, path, headers }, (res) => {
+        let body = '';
+        res.on('data', (c) => { body += c; });
+        res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body }));
+      })
+      .on('error', reject);
+  });
+}
+
+test('GET /health reports the configured sources', async () => {
+  const server = await listen();
+  try {
+    const res = await request(server, '/health', { 'x-forwarded-for': '198.51.100.1' });
+    assert.equal(res.status, 200);
+    const body = JSON.parse(res.body);
+    assert.equal(body.ok, true);
+    assert.ok(body.sources.includes('gibgas'));
+    assert.ok(body.sources.includes('mimit(IT)'));
+    assert.equal(typeof body.seedStations.cng, 'number');
+  } finally {
+    server.close();
+  }
+});
+
+test('GET /geocode: a one-character query answers [] without calling upstream', async () => {
+  const server = await listen();
+  try {
+    const res = await request(server, '/geocode?q=a', { 'x-forwarded-for': '198.51.100.2' });
+    assert.equal(res.status, 200);
+    assert.deepEqual(JSON.parse(res.body), []);
+  } finally {
+    server.close();
+  }
+});
+
+test('GET /stations and /prices reject a missing position', async () => {
+  const server = await listen();
+  try {
+    for (const path of ['/stations?r=10&fuel=cng', '/prices?r=10&fuel=cng']) {
+      const res = await request(server, path, { 'x-forwarded-for': '198.51.100.3' });
+      assert.equal(res.status, 400, `${path} is rejected`);
+      assert.match(JSON.parse(res.body).error, /lat and lon/);
+    }
+  } finally {
+    server.close();
+  }
+});
+
+test('the rate limit rejects a client once its window is spent', async () => {
+  const server = await listen();
+  const ip = '198.51.100.99';
+  try {
+    for (let i = 0; i < RATE_LIMIT_MAX; i++) {
+      const res = await request(server, '/geocode?q=a', { 'x-forwarded-for': ip });
+      assert.equal(res.status, 200, `request ${i + 1} is still allowed`);
+    }
+    const blocked = await request(server, '/geocode?q=a', { 'x-forwarded-for': ip });
+    assert.equal(blocked.status, 429);
+    assert.ok(blocked.headers['retry-after'], 'and says when to come back');
+
+    const other = await request(server, '/geocode?q=a', { 'x-forwarded-for': '198.51.100.100' });
+    assert.equal(other.status, 200, 'a different client is unaffected');
+  } finally {
+    server.close();
+  }
 });

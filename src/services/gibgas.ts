@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { haversineKm } from '../utils/geo';
 import { storage } from '../utils/storage';
 import { recordPrice } from '../utils/priceHistory';
-import type { FuelType } from '../store/useAppStore';
+import type { BenzinType, FuelType } from '../store/useAppStore';
 
 export const FUEL_META: Record<
   FuelType,
@@ -388,10 +388,11 @@ function mergeAndVerify(
 
 const CACHE_TTL_MS = 20 * 60 * 1000;
 const r1 = (n: number) => Math.round(n * 100) / 100; // Round to 2 decimal places (~1km)
-const cacheKey = (lat: number, lng: number, r: number, fuel: FuelType) => `${fuel}_v3_${r1(lat)}_${r1(lng)}_${r}`;
+const cacheKey = (lat: number, lng: number, r: number, fuel: FuelType, benzinType: BenzinType) =>
+  `${fuel}${fuel === 'benzin' ? `_${benzinType}` : ''}_v4_${r1(lat)}_${r1(lng)}_${r}`;
 
-function readCache(lat: number, lng: number, radius: number, fuel: FuelType): Station[] | null {
-  const raw = storage.getItem(cacheKey(lat, lng, radius, fuel));
+function readCache(lat: number, lng: number, radius: number, fuel: FuelType, benzinType: BenzinType): Station[] | null {
+  const raw = storage.getItem(cacheKey(lat, lng, radius, fuel, benzinType));
   if (!raw) return null;
   try {
     const { ts, data } = JSON.parse(raw);
@@ -401,16 +402,16 @@ function readCache(lat: number, lng: number, radius: number, fuel: FuelType): St
   }
 }
 
-function writeCache(lat: number, lng: number, radius: number, fuel: FuelType, data: Station[]) {
-  storage.setItem(cacheKey(lat, lng, radius, fuel), JSON.stringify({ ts: Date.now(), data }));
+function writeCache(lat: number, lng: number, radius: number, fuel: FuelType, benzinType: BenzinType, data: Station[]) {
+  storage.setItem(cacheKey(lat, lng, radius, fuel, benzinType), JSON.stringify({ ts: Date.now(), data }));
 }
 
 // ── Combined fetch ────────────────────────────────────────────────────────────
 
 const RADIUS_STEPS = [10, 20, 50];
 
-async function fetchStations(lat: number, lng: number, radius: number, fuel: FuelType): Promise<Station[]> {
-  const cached = readCache(lat, lng, radius, fuel);
+async function fetchStations(lat: number, lng: number, radius: number, fuel: FuelType, benzinType: BenzinType): Promise<Station[]> {
+  const cached = readCache(lat, lng, radius, fuel, benzinType);
   if (cached) return cached;
 
   const timeout = <T>(ms: number): Promise<T> =>
@@ -426,7 +427,7 @@ async function fetchStations(lat: number, lng: number, radius: number, fuel: Fue
       queryOverpass(lat, lng, fetchRadius, fuel),
       Promise.race([
         axios.get<CTStation[]>(
-          `${PROXY_BASE}/prices?lat=${lat.toFixed(6)}&lon=${lng.toFixed(6)}&r=${fetchRadius}&fuel=${fuel}`,
+          `${PROXY_BASE}/prices?lat=${lat.toFixed(6)}&lon=${lng.toFixed(6)}&r=${fetchRadius}&fuel=${fuel}&benzinType=${benzinType}`,
           { timeout: priceTimeoutMs + 1000 }
         )
           .then(res => res.data),
@@ -440,7 +441,7 @@ async function fetchStations(lat: number, lng: number, radius: number, fuel: Fue
     // Only cache if we actually got discovery results from Overpass,
     // or if the list is legitimately empty (to avoid caching temporary failures).
     // Actually, if queryOverpass didn't throw, it's a "success" even if empty.
-    writeCache(lat, lng, radius, fuel, merged);
+    writeCache(lat, lng, radius, fuel, benzinType, merged);
     return merged;
   } catch (err) {
     console.error('[fetchStations] Error:', err);
@@ -448,7 +449,7 @@ async function fetchStations(lat: number, lng: number, radius: number, fuel: Fue
     // even though a smaller radius previously succeeded for this location.
     // Fall back to the closest smaller radius' cache instead of showing nothing.
     for (const r of RADIUS_STEPS.filter((r) => r < radius).sort((a, b) => b - a)) {
-      const fallback = readCache(lat, lng, r, fuel);
+      const fallback = readCache(lat, lng, r, fuel, benzinType);
       if (fallback) return fallback;
     }
     return [];
@@ -457,15 +458,21 @@ async function fetchStations(lat: number, lng: number, radius: number, fuel: Fue
 
 // ── React Query hook ──────────────────────────────────────────────────────────
 
-export function useStations(lat: number | null, lng: number | null, radius: number, fuel: FuelType) {
+export function useStations(
+  lat: number | null,
+  lng: number | null,
+  radius: number,
+  fuel: FuelType,
+  benzinType: BenzinType = 'e5'
+) {
   // We use rounded coordinates for the query KEY to avoid too many redundant requests
   // but we use REAL coordinates for the actual FETCH logic to ensure precision.
   const rlat = lat !== null ? r1(lat) : null;
   const rlng = lng !== null ? r1(lng) : null;
 
   return useQuery({
-    queryKey: ['stations', fuel, rlat, rlng, radius],
-    queryFn: () => fetchStations(lat!, lng!, radius, fuel),
+    queryKey: ['stations', fuel, fuel === 'benzin' ? benzinType : null, rlat, rlng, radius],
+    queryFn: () => fetchStations(lat!, lng!, radius, fuel, benzinType),
     enabled: lat !== null && lng !== null,
     staleTime: CACHE_TTL_MS,
     gcTime: 30 * 60 * 1000,
