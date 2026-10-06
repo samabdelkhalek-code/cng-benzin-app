@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * Refreshes osm-seed.json — the bundled snapshot of OSM fuel stations for
+ * Refreshes osm-seed.json and it-cng-seed.json — the bundled snapshot of OSM fuel stations for
  * DE/AT/CH that /stations falls back to when every Overpass mirror is down.
  *
  * Run with: npm run seed
@@ -112,6 +112,27 @@ async function main() {
   fs.writeFileSync(outPath, JSON.stringify(seed));
   const sizeKb = (fs.statSync(outPath).size / 1024).toFixed(0);
   console.log(`wrote ${outPath} (${sizeKb} kB)`);
+
+  // Italian CNG snapshot: the cold-start fallback for Osservaprezzi, whose two
+  // CSVs are far too slow to fetch inside a request.
+  try {
+    console.log('fetching Italian Metano prices (MIMIT) …');
+    const { buildMimitIndex } = require('./index');
+    const base = 'https://www.mimit.gov.it/images/exportCSV';
+    const [anagrafica, prezzi] = await Promise.all([
+      axios.get(`${base}/anagrafica_impianti_attivi.csv`, { timeout: 120_000, responseType: 'text' }),
+      axios.get(`${base}/prezzo_alle_8.csv`, { timeout: 120_000, responseType: 'text' }),
+    ]);
+    const italy = buildMimitIndex(anagrafica.data, prezzi.data);
+    if (!italy.length) throw new Error('no Metano stations parsed');
+    const italyPath = path.join(__dirname, 'it-cng-seed.json');
+    fs.writeFileSync(italyPath, JSON.stringify(italy));
+    console.log(`  -> ${italy.length} Metano stations`);
+  } catch (err) {
+    failures++;
+    console.error(`  !! Italian snapshot failed: ${err.message} (keeping existing)`);
+  }
+
   process.exit(failures ? 1 : 0);
 }
 

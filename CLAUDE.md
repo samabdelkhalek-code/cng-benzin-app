@@ -29,7 +29,8 @@
 - The Expo build fails on Render's free tier, so **`dist/` is built locally and committed**. Frontend change → `npm run build:web` → commit `dist/` in the same commit, otherwise the old bundle stays live.
 
 ## Technical Debt / Known Issues
-- **Overpass:** frequently 504s. `/stations` caches 24 h, serves stale data during outages, and falls back to `server/osm-seed.json`. Refresh that snapshot with `npm run seed` in `server/`.
+- **Overpass:** frequently 504s. `/stations` caches 24 h and answers from cache or `server/osm-seed.json` **first**, refreshing behind the response — never make a request wait on Overpass, a cold key costs 26 s and clients time out into an empty list.
+- **Osservaprezzi (IT):** the two CSVs are ~7.5 MB and took 93 s to fetch, so they are never awaited either; `server/it-cng-seed.json` covers cold starts and the index refreshes in the background. Both snapshots are refreshed by `npm run seed` in `server/`.
 - **gibgas:** ignores the `r` parameter and always returns the 12 nearest POIs — `sampleCenters` queries a ring of offset centres so wider radii are covered.
 - **clever-tanken:** dead (404 everywhere), removed from `/prices`.
 - **Tankerkönig:** needs a real `TANKERKOENIG_API_KEY` on the proxy; the public demo key returns real stations but one placeholder price, which is then withheld. A rejected key falls back to demo (stations only) rather than emptying the tab — `/health` reports the actual state.

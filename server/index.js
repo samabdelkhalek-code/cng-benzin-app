@@ -526,35 +526,64 @@ function buildMimitIndex(anagraficaCsv, prezziCsv) {
   return stations;
 }
 
-async function loadMimitStations() {
-  const hit = cacheGet(mimitCache, 'cng', MIMIT_CACHE_TTL);
-  if (hit && !hit.stale) return hit.data;
-
-  try {
-    const [anagrafica, prezzi] = await Promise.all([
-      axios.get(`${MIMIT_BASE}/anagrafica_impianti_attivi.csv`, { timeout: 25_000, responseType: 'text' }),
-      axios.get(`${MIMIT_BASE}/prezzo_alle_8.csv`, { timeout: 25_000, responseType: 'text' }),
-    ]);
-    const stations = buildMimitIndex(anagrafica.data, prezzi.data);
-    if (!stations.length) throw new Error('no Metano stations parsed');
-    cacheSet(mimitCache, 'cng', stations);
-    console.log(`[prices] MIMIT: indexed ${stations.length} Metano stations`);
-    return stations;
-  } catch (err) {
-    console.error('[prices] MIMIT failed:', err.message);
-    return hit ? hit.data : []; // stale index still beats no coverage
-  }
+// Cold-start fallback, refreshed by `npm run seed` alongside the OSM snapshot.
+// Without it the very first Italian request after a restart would have no
+// prices at all, and Render's free tier spins the service down constantly.
+let mimitSeed = [];
+try {
+  mimitSeed = require('./it-cng-seed.json');
+} catch {
+  console.warn('[prices] no it-cng-seed.json bundled — Italy is uncovered until the first refresh');
 }
 
-// Rough bounding box for Italy incl. South Tyrol; skip the download elsewhere.
+async function downloadMimitIndex() {
+  const [anagrafica, prezzi] = await Promise.all([
+    axios.get(`${MIMIT_BASE}/anagrafica_impianti_attivi.csv`, { timeout: 60_000, responseType: 'text' }),
+    axios.get(`${MIMIT_BASE}/prezzo_alle_8.csv`, { timeout: 60_000, responseType: 'text' }),
+  ]);
+  const stations = buildMimitIndex(anagrafica.data, prezzi.data);
+  if (!stations.length) throw new Error('no Metano stations parsed');
+  cacheSet(mimitCache, 'cng', stations);
+  console.log(`[prices] MIMIT: indexed ${stations.length} Metano stations`);
+  return stations;
+}
+
+let mimitRefresh = null;
+
+/** Starts a refresh unless one is already running; never awaited by a request. */
+function ensureMimitIndex() {
+  if (mimitRefresh) return mimitRefresh;
+  mimitRefresh = downloadMimitIndex()
+    .catch((err) => {
+      console.error('[prices] MIMIT refresh failed:', err.message);
+      return null;
+    })
+    .finally(() => { mimitRefresh = null; });
+  return mimitRefresh;
+}
+
+/**
+ * The index as it stands right now. The two CSVs weigh ~7.5 MB and took 93 s
+ * to fetch on a cold cache, far longer than any client waits — awaiting them
+ * left the app with no price source at all and therefore an empty list. So the
+ * freshest data on hand is returned at once and the download runs behind it.
+ */
+function mimitStations() {
+  const hit = cacheGet(mimitCache, 'cng', MIMIT_CACHE_TTL);
+  if (!hit || hit.stale) ensureMimitIndex();
+  return hit?.data?.length ? hit.data : mimitSeed;
+}
+
+// Rough bounding box for Italy incl. South Tyrol; skip the work elsewhere.
 function nearItaly(lat, lon) {
   return Number(lat) >= 35.4 && Number(lat) <= 47.3 && Number(lon) >= 6.5 && Number(lon) <= 18.7;
 }
 
-async function fetchItalyCNG(lat, lon, radiusKm, fuel) {
+function fetchItalyCNG(lat, lon, radiusKm, fuel) {
   if (normalizeFuel(fuel) !== 'cng' || !nearItaly(lat, lon)) return [];
-  const stations = await loadMimitStations();
-  return stations.filter((s) => haversineKm(Number(lat), Number(lon), s.lat, s.lng) <= radiusKm);
+  return mimitStations().filter(
+    (s) => haversineKm(Number(lat), Number(lon), s.lat, s.lng) <= radiusKm
+  );
 }
 
 // ── E-Control (Österreich) ────────────────────────────────────────────────────
@@ -879,7 +908,12 @@ app.post('/v1/agent-task', async (req, res) => {
 
 // Only start the server when run directly (not when required by tests).
 if (require.main === module) {
-  app.listen(PORT, () => console.log(`CNG proxy listening on :${PORT}`));
+  app.listen(PORT, () => {
+    console.log(`CNG proxy listening on :${PORT}`);
+    // Warm the Italian index so the first request after a cold start is served
+    // from fresh data rather than the bundled snapshot.
+    ensureMimitIndex();
+  });
 }
 
 module.exports = {
