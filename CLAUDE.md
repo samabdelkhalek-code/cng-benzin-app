@@ -1,50 +1,94 @@
 # CLAUDE.md
 
-## Stack & Environment
-- **Tech:** Expo SDK 54, React Native 0.81.5, Zustand, React Query.
-- **Platforms:** Web (Priority), Android (Native).
-- **Core Logic:** `App.tsx` (Location) → `useAppStore` → `useStations` → `PriceScreen`.
-- **Data:** All upstream calls go through the proxy in `server/`. Discovery: Overpass/OSM via `/stations`. Prices: gibgas.de (CNG, DE/AT), Osservaprezzi/MIMIT (CNG, IT incl. South Tyrol), Tankerkönig (Benzin), E-Control (AT only). Place search: Nominatim via `/geocode`.
-- **Verification:** A station is only listed when two independent sources confirm it — OSM fuel tag **and** a matching price source within 1 km (`MATCH_KM`). Unverified stations are never shown.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Build & Dev
-- `npm run web` | `npm run android` | `npm run ios`
-- `npx expo prebuild --platform android`
-- `npm run build` | `npm run lint`
+## Commands
 
-## Strict Guidelines
-- **No Permission:** Don't ask. Just execute. Always "Yes".
-- **Code Style:** TypeScript, strict types, functional, state-of-the-art UI/UX.
-- **Navigation:** Web uses `http://maps.google.com/maps?daddr=...`.
-- **Logic:** Haversine distance client-side. Travel time @ 50 km/h.
-- **Accuracy:** Use existing file context. No redundant scans.
+```bash
+npm run web            # Expo dev server (web is the primary platform)
+npm run android        # native build; run `npx expo prebuild --platform android` first if needed
+npm run build:web      # expo export -p web → dist/   (see Deployment: dist/ is committed)
 
-## Caveman Mode (Token Saving)
-- **No Filler:** No "I understand", "Sure", or "Here is the update".
-- **Diffs Only:** Only output changed lines, not full files.
-- **Speech:** Short, declarative, logic-driven. No pleasantries.
+npm test               # client tests (src/**/*.test.ts)
+npm run test:server    # proxy tests (server/index.test.js)
+node --test --test-name-pattern "overnight" src/utils/openingHours.test.ts   # a single test
+
+cd server && npm start      # proxy on :3001
+cd server && npm run seed   # refresh osm-seed.json + it-cng-seed.json (slow, network-bound)
+```
+
+There is no lint script and no test framework beyond `node:test` — tests are
+plain files with no build step, and client tests rely on Node's TypeScript
+stripping, so their imports need explicit `.ts` extensions.
+
+## Architecture
+
+Two deployables in one repo: an Expo app (`App.tsx`, `src/`) and an Express
+proxy (`server/`) that every upstream call goes through.
+
+**Request path:** `App.tsx` resolves a location (GPS, else IP) → `useAppStore`
+holds radius, fuel and petrol grade → `useStations` in `src/services/gibgas.ts`
+(despite the name it owns all fetching, caching and the verification merge) →
+`PriceScreen` renders the list. `MapScreen` reads the same hook, so both views
+always agree.
+
+**The two-source rule is the core invariant.** A station is listed only when two
+independent sources confirm it: an OSM `fuel:cng` / `fuel:octane_95` tag **and**
+a price source within `MATCH_KM` (1 km). `mergeAndVerify` sets `verified`, and
+both screens filter on it. OSM fuel tags are demonstrably wrong in the field —
+the Aral in Schwäbisch Gmünd and the Eni in Bruneck are tagged CNG but sell
+none — and this rule is what hides them. Do not relax it to raise the hit count.
+
+**Sources** (`server/index.js`): discovery from Overpass via `/stations`; CNG
+prices from gibgas (DE/AT) and Osservaprezzi/MIMIT (IT, incl. South Tyrol);
+petrol from Tankerkönig; E-Control for Austria; place search via `/geocode`
+(Photon first because it does prefix matching, Nominatim as fallback).
+
+**Every upstream is slow, flaky or both, so none is awaited on the hot path.**
+This is the hardest-won property here and the cause of most past outages; each
+fix took the same shape, and a new source should follow it:
+
+| Upstream | Failure seen | Mitigation |
+|---|---|---|
+| Overpass | all mirrors 504; a cold key cost 26 s | 24 h cache, 4 s grace window, then `osm-seed.json`; refresh continues behind the response |
+| MIMIT | two CSVs ≈ 7.5 MB, measured 93 s cold | `it-cng-seed.json` fallback, background refresh, 10 min failure backoff |
+| gibgas | ignores `r`, always returns the 12 nearest POIs | `sampleCenters` queries a ring of offset centres |
+| Nominatim | 1 req/s policy; matches whole terms only | capped serialised queue; Photon handles type-ahead |
+| Tankerkönig | demo key returns one placeholder price | price withheld; a rejected real key falls back to demo (stations only) |
+| clever-tanken | 404 everywhere | removed |
+
+Clients cache for 20 minutes, so answering from a snapshot when live data was
+available pins stale results for a whole session — hence the grace window rather
+than an unconditional fallback.
 
 ## Deployment (Render)
-- Two services from GitHub `cng-benzin-app`/main: `cng-app-web` (static) and `cng-proxy` (`rootDir: server`).
-- The Expo build fails on Render's free tier, so **`dist/` is built locally and committed**. Frontend change → `npm run build:web` → commit `dist/` in the same commit, otherwise the old bundle stays live.
 
-## Technical Debt / Known Issues
-- **Overpass:** frequently 504s. `/stations` caches 24 h, gives a refresh `OVERPASS_GRACE_MS` (4 s) to answer with live data, then falls back to the cache or `server/osm-seed.json` while the refresh finishes behind the response. Never await the full sweep: a cold key costs 26 s and clients time out into an empty list.
-- **Osservaprezzi (IT):** the two CSVs are ~7.5 MB and took 93 s to fetch, so they are never awaited either; `server/it-cng-seed.json` covers cold starts and the index refreshes in the background. Both snapshots are refreshed by `npm run seed` in `server/`.
-- **gibgas:** ignores the `r` parameter and always returns the 12 nearest POIs — `sampleCenters` queries a ring of offset centres so wider radii are covered.
-- **clever-tanken:** dead (404 everywhere), removed from `/prices`.
-- **Tankerkönig:** needs a real `TANKERKOENIG_API_KEY` on the proxy; the public demo key returns real stations but one placeholder price, which is then withheld. A rejected key falls back to demo (stations only) rather than emptying the tab — `/health` reports the actual state.
-- **Nominatim:** policy allows 1 req/s and wants a descriptive User-Agent plus caching — all handled in `/geocode`; never call it from the client.
-- **OSM fuel tags can be wrong:** stations tagged `fuel:cng=yes` that no price source knows (Aral Schwäbisch Gmünd, Eni Bruneck) are genuinely not CNG. The two-source rule is what filters them out; do not weaken it to raise the hit count.
-- **Rate limit:** `RATE_LIMIT_MAX` (default 120/min per client IP) guards the unauthenticated proxy; the Nominatim queue is capped at `NOMINATIM_MAX_QUEUE` and rejects the tail rather than parking it.
+Two services from GitHub `cng-benzin-app`/main: `cng-app-web` (static) and
+`cng-proxy` (`rootDir: server`). The Expo build exceeds the free tier, so
+**`dist/` is built locally and committed** — a frontend change means running
+`npm run build:web` and committing `dist/` in the same commit, or the old bundle
+stays live. Deploys have repeatedly lagged hours behind a push: verify with the
+bundle hash at the site root and `/health` on the proxy rather than assuming.
 
-## Key Files
-- `App.tsx`: Location strategies (GPS/IP).
-- `src/store/useAppStore.ts`: App state & radius.
-- `src/services/gibgas.ts`: Fetching, verification merge & client cache.
-- `src/screens/PriceScreen.tsx`: Main UI & Sorting.
-- `server/index.js`: Proxy — `/stations`, `/prices`, caching.
-- `server/seed.js`: Refreshes the bundled OSM snapshot.
+`TANKERKOENIG_API_KEY` (free, from onboarding.tankerkoenig.de) must be set in the
+Render dashboard for real petrol prices. `/health` reports whether the key
+actually works, not merely whether one is set.
 
-## no questions
-- don't ask me always go with yes no aproval needed
+## Gotchas
+
+- `server/` is **a nested git repo** (`cng-station-agent`). Check `git remote -v`
+  before committing from inside it — commits made there never reach the app.
+- `RATE_LIMIT_MAX` (default 120/min per IP) guards the unauthenticated proxy.
+- `README.md` is stale: it describes marker clustering, a bottom sheet and
+  in-app polyline routing that no longer exist, and radii that do not match.
+  `supercluster` and `@gorhom/bottom-sheet` remain in `package.json` but are
+  imported nowhere; the web map is Leaflet, native is react-native-maps. Trust
+  the code over it.
+
+## User preferences
+
+- **No permission:** don't ask, just execute.
+- **Code style:** TypeScript, strict types, functional.
+- **Navigation:** web uses `http://maps.google.com/maps?daddr=...`.
+- **Logic:** Haversine distance client-side; travel time at 50 km/h.
+- **Speech:** short and declarative, no filler; show diffs rather than whole files.
