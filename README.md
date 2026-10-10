@@ -1,133 +1,123 @@
 # CNG-App
 
-Android-App zur Anzeige von CNG- und Benzin-Tankstellen in der Umgebung. Zeigt Preise, Öffnungszeiten und ermöglicht die Navigation zu Stationen.
+Findet CNG- und Benzin-Tankstellen in Deutschland, Österreich und Italien —
+mit Preisen, Öffnungszeiten und Navigation. Läuft als Web-App und als
+Android-App aus derselben Codebasis.
+
+**Live:** [cng-app-web.onrender.com](https://cng-app-web.onrender.com)
+
+## Was die App besonders macht
+
+Eine Station wird **nur angezeigt, wenn zwei unabhängige Quellen sie
+bestätigen**: ein OSM-Kraftstoff-Tag *und* eine Preisquelle in höchstens 1 km
+Entfernung. Das ist keine Spielerei — OpenStreetMap-Tags sind im Feld
+nachweislich falsch. Die Aral in Schwäbisch Gmünd und die Eni in Bruneck sind
+als CNG getaggt, verkaufen laut den amtlichen Preisregistern aber keines. Ohne
+diese Regel schickt die App Leute zu Zapfsäulen, die es nicht gibt.
+
+Der Preis dafür: Die Liste ist kürzer als bei anderen Apps. Das ist Absicht.
 
 ## Features
 
-- Interaktive Google Maps Karte mit dunklem Theme
-- Tabs für CNG und Benzin mit denselben Listen-, Karten- und Filterfunktionen
-- Stationen als Marker mit Echtzeit-Preisanzeige
-- Automatisches Marker-Clustering ab 10+ Stationen im Sichtbereich
-- Bottom Sheet bei Station-Auswahl: Name, Adresse, Preis, Öffnungszeiten
-- In-App Navigation mit Polylinien-Route
-- Preisliste sortiert nach günstigstem Preis
-- Radius-Filter: 10 / 25 / 50 km
-- Pull-to-Refresh, 5-Minuten-Cache via React Query
+- Ortssuche mit Vorschlägen schon während des Tippens („Brunec" findet Bruneck)
+- Umkreissuche mit 10 / 20 / 50 km
+- Getrennte Tabs für CNG (€/kg) und Benzin (€/L), jeweils mit eigener Akzentfarbe
+- Benzinsorten E5, E10 und Diesel
+- Liste und Karte, sortierbar nach Entfernung oder Preis
+- Öffnungszeiten inklusive Nachtöffnung und Mittagspause, Filter „Nur Offene"
+- Preistrend der letzten sieben Tage
+- Navigation über Google Maps
 
-## Tech Stack
+## Datenquellen
 
-| Bibliothek | Zweck |
-|---|---|
-| Expo SDK 54 | Build-System & native Module |
-| React Native Maps | Google Maps Integration |
-| expo-location | GPS-Standortabfrage |
-| @tanstack/react-query | Datenfetching & Caching |
-| axios | HTTP-Client |
-| zustand | Globaler State |
-| @gorhom/bottom-sheet | Station-Detailansicht |
-| supercluster | Marker-Clustering-Algorithmus |
+| Quelle | Rolle | Abdeckung |
+|---|---|---|
+| OpenStreetMap (Overpass) | Stationssuche | alle |
+| gibgas.de | CNG-Preise | DE, AT |
+| Osservaprezzi (MIMIT) | CNG-Preise | IT inkl. Südtirol |
+| Tankerkönig (MTS-K) | Benzinpreise | DE |
+| E-Control | Preise | AT |
+| Photon / Nominatim | Ortssuche | alle |
 
-## Voraussetzungen
+Alle Abrufe laufen über den Proxy in `server/`, nie direkt aus dem Browser —
+sonst wären weder Nutzungsbedingungen (Nominatim erlaubt eine Anfrage pro
+Sekunde) noch gemeinsames Caching einzuhalten.
 
-- Node.js 18+
-- Android Studio (für Android-Emulator) oder physisches Android-Gerät
-- Google Maps API Key (mit Maps SDK for Android + Directions API aktiviert)
-- gibgas.de API Key
+## Technik
 
-## Setup
+Expo SDK 54 mit React Native, React Query fürs Fetching, Zustand für den State.
+Die Karte ist plattformabhängig: Leaflet im Web, react-native-maps auf Android.
+Der Proxy ist ein Express-Server ohne Datenbank — alle Caches liegen im
+Arbeitsspeicher, dazu zwei eingebettete Datensätze als Rückfallebene.
 
-### 1. Repository klonen & Dependencies installieren
+## Entwicklung
 
 ```bash
-git clone <repo-url>
-cd cng-app
 npm install
+npm run web                    # Web-Entwicklungsserver
+
+cd server && npm install
+cd server && npm start         # Proxy auf :3001
 ```
 
-### 2. API Keys konfigurieren
+Ohne eigenen Proxy nutzt die App den öffentlichen unter
+`https://cng-proxy.onrender.com`. Für einen lokalen Proxy:
 
 ```bash
-cp .env.example .env
+echo "EXPO_PUBLIC_PROXY_URL=http://localhost:3001" > .env
 ```
 
-`.env` befüllen:
+### Tests
 
-```
-EXPO_PUBLIC_GIBGAS_API_KEY=dein-gibgas-api-key
-EXPO_PUBLIC_GOOGLE_MAPS_API_KEY=dein-google-maps-api-key
-```
-
-### 3. Google Maps Key in app.json eintragen
-
-In `app.json` den Platzhalter ersetzen:
-
-```json
-"android": {
-  "config": {
-    "googleMaps": {
-      "apiKey": "DEIN_ECHTER_API_KEY"
-    }
-  }
-}
+```bash
+npm test                       # Client (src/**/*.test.ts)
+npm run test:server            # Proxy
 ```
 
-### 4. Native Android-Projekt generieren
+Keine Testbibliothek, nur Nodes eingebautes `node:test`.
+
+### Android
 
 ```bash
 npx expo prebuild --platform android
-```
-
-### 5. App starten
-
-**Entwicklungsmodus:**
-```bash
-npx expo start
-```
-
-**Auf Android-Gerät/Emulator:**
-```bash
 npx expo run:android
 ```
 
-## Projektstruktur
+Dafür wird ein Google-Maps-Key benötigt (Maps SDK for Android), der in
+`app.json` unter `android.config.googleMaps.apiKey` den Platzhalter ersetzt.
+Die Web-Version braucht ihn nicht.
 
-```
-cng-app/
-├── src/
-│   ├── screens/
-│   │   ├── MapScreen.tsx           # Karte mit Clustering & Navigation
-│   │   └── PriceScreen.tsx         # Preisliste mit Filter
-│   ├── components/
-│   │   ├── StationMarker.tsx        # Custom Map Marker + Cluster Marker
-│   │   └── StationBottomSheet.tsx   # Station-Detailansicht
-│   ├── services/
-│   │   ├── gibgas.ts                # API-Client für Stationen & Preise
-│   │   └── maps.ts                  # Google Directions API
-│   └── store/
-│       └── useAppStore.ts           # Globaler Zustand (Zustand)
-├── App.tsx                          # Root: Navigation + Provider
-├── app.json                         # Expo-Konfiguration
-├── .env.example                     # Vorlage für Umgebungsvariablen
-└── .gitignore
+### Datensätze auffrischen
+
+```bash
+cd server && npm run seed
 ```
 
-## Umgebungsvariablen
+Erneuert `osm-seed.json` und `it-cng-seed.json` — die Rückfallebene, falls
+Overpass oder Osservaprezzi ausfallen. Beide Dienste sind unzuverlässig oder
+langsam genug, dass die App sonst zeitweise leere Listen zeigen würde.
 
-| Variable | Beschreibung |
-|---|---|
-| `EXPO_PUBLIC_OPENCHARGEMAP_API_KEY` | API-Key für OpenChargeMap (kostenlos) |
-| `EXPO_PUBLIC_GOOGLE_MAPS_API_KEY` | Google Maps API Key (Maps + Directions) |
+## Deployment
 
-> `EXPO_PUBLIC_`-Präfix ist bei Expo erforderlich, damit Variablen im App-Bundle verfügbar sind.
+Zwei Render-Services aus diesem Repository: `cng-app-web` (statisch) und
+`cng-proxy` (`rootDir: server`). Der Expo-Build übersteigt Renders kostenlose
+Stufe, deshalb liegt **`dist/` fertig gebaut im Repository** — nach jeder
+Frontend-Änderung `npm run build:web` ausführen und `dist/` mitcommitten, sonst
+bleibt die alte Version live.
 
-## Google Maps API aktivieren
+Für echte Benzinpreise muss `TANKERKOENIG_API_KEY` in den Render-Einstellungen
+des Proxys gesetzt sein (kostenlos über
+[onboarding.tankerkoenig.de](https://onboarding.tankerkoenig.de/)). Ohne ihn
+zeigt die App Stationen, aber keine Preise — der öffentliche Demo-Key liefert
+für alle Stationen denselben Platzhalterwert, der bewusst unterdrückt wird.
 
-In der [Google Cloud Console](https://console.cloud.google.com/):
+Status prüfen:
 
-1. APIs aktivieren: **Maps SDK for Android** + **Directions API**
-2. API Key erstellen und auf Android-Paket `de.cngapp` beschränken
+```bash
+curl -s https://cng-proxy.onrender.com/health
+```
 
-## OpenChargeMap API
+## Lizenz & Daten
 
-Kostenloser API-Key unter [openchargemap.io](https://openchargemap.io/site/develop/api).  
-Die App verwendet Overpass/OSM zur Stationssuche und reichert Preise über den Proxy mit gibgas.de, clever-tanken.de und E-Control an. CNG wird als `€/kg`, Benzin als `€/L` angezeigt.
+Stationsdaten aus OpenStreetMap (ODbL). Benzinpreise von Tankerkönig
+(CC BY 4.0), CNG-Preise von gibgas.de, Osservaprezzi (MIMIT) und E-Control.

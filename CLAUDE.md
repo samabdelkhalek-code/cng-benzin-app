@@ -79,11 +79,8 @@ actually works, not merely whether one is set.
 - `server/` is **a nested git repo** (`cng-station-agent`). Check `git remote -v`
   before committing from inside it — commits made there never reach the app.
 - `RATE_LIMIT_MAX` (default 120/min per IP) guards the unauthenticated proxy.
-- `README.md` is stale: it describes marker clustering, a bottom sheet and
-  in-app polyline routing that no longer exist, and radii that do not match.
-  `supercluster` and `@gorhom/bottom-sheet` remain in `package.json` but are
-  imported nowhere; the web map is Leaflet, native is react-native-maps. Trust
-  the code over it.
+- The web map is Leaflet, the native one react-native-maps — `StationMap`
+  resolves per platform, so a map change usually means touching both files.
 
 ## User preferences
 
