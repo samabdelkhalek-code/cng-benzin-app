@@ -24,6 +24,17 @@ services:
     name: cng-app-web
     runtime: static
     staticPublishPath: ./dist
+    headers:
+      # Expo stamps a content hash into every asset filename, so these can be
+      # cached forever — Render otherwise sends max-age=0 and the browser
+      # re-fetches the ~435 kB bundle on every visit.
+      - path: /_expo/static/*
+        name: Cache-Control
+        value: public, max-age=31536000, immutable
+      # The entry document must stay fresh, or a new build is never picked up.
+      - path: /index.html
+        name: Cache-Control
+        value: public, max-age=0, must-revalidate
     envVars:
       - key: EXPO_PUBLIC_PROXY_URL
         sync: false

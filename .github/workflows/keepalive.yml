@@ -1,0 +1,35 @@
+name: Keep the proxy warm
+
+# Render's free tier spins a service down after ~15 minutes without traffic, and
+# the next visitor then waits roughly a minute for it to boot — by far the
+# largest delay the app has. A warm instance answers /health in ~300 ms.
+#
+# The ping also pre-warms the in-memory caches the proxy rebuilds on every
+# restart: the OSM station index and the Italian price index, whose source CSVs
+# take over a minute to download.
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+# A queued run is pointless once a newer one starts
+concurrency:
+  group: keepalive
+  cancel-in-progress: true
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Ping /health
+        run: |
+          # --max-time covers a cold boot; the point is to wait it out so the
+          # next real visitor does not have to.
+          code=$(curl -sS -o /tmp/health.json -w '%{http_code}' --max-time 120 \
+            https://cng-proxy.onrender.com/health)
+          echo "HTTP $code"
+          cat /tmp/health.json
+          echo
+          test "$code" = "200"

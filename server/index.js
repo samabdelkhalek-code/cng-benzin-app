@@ -23,6 +23,35 @@ app.use((req, res, next) => {
   next();
 });
 
+// ── Response caching ─────────────────────────────────────────────────────────
+//
+// Cloudflare sits in front of Render, so `s-maxage` lets it answer repeats
+// without touching the origin at all — which also hides the free tier's cold
+// start on those paths. `max-age` lets the browser skip the ~300 ms round trip
+// entirely when a user flips between radii or tabs.
+//
+// The windows are shorter than the server-side caches on purpose: those can be
+// invalidated by a refresh, an HTTP cache cannot.
+const CACHE_CONTROL = {
+  '/stations': 'public, max-age=300, s-maxage=3600, stale-while-revalidate=86400',
+  '/geocode': 'public, max-age=3600, s-maxage=86400',
+  '/prices': 'public, max-age=120, s-maxage=300, stale-while-revalidate=900',
+};
+
+app.use((req, res, next) => {
+  const policy = CACHE_CONTROL[req.path];
+  if (policy) res.setHeader('Cache-Control', policy);
+  else res.setHeader('Cache-Control', 'no-store');
+  next();
+});
+
+// Shrinks the JSON payloads, which run to tens of kB at a 50 km radius.
+try {
+  app.use(require('compression')());
+} catch {
+  console.warn('[server] compression not installed — responses are sent uncompressed');
+}
+
 // ── Rate limit ───────────────────────────────────────────────────────────────
 //
 // The proxy is unauthenticated and fans out to third parties who each impose
